@@ -1,0 +1,26 @@
+{
+  "name": "@velio/sync",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Velio Sync Worker (PLAN.md).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "test-account": "node scripts/make-test-account.ts",
+    "tsc": "tsc && tsc -p src/client",
+    "test": "node scripts/build-client.mjs && vitest run",
+    "build": "node scripts/build-client.mjs"
+  },
+  "dependencies": {
+    "@velio/sync-core": "workspace:*",
+    "hono": "^4.13.17",
+    "htmx.org": "4.0.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.6.0",
+    "esbuild": "^0.28.2",
+    "wrangler": "^4.158.0"
+  }
+}

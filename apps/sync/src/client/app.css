@@ -1,0 +1,403 @@
+/* Velio's pages. Plain CSS, no inline styles (the CSP has style-src 'self'). */
+
+:root {
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --text: #1c1c1e;
+  --muted: #5f6368;
+  --line: #d9d9d6;
+  --accent: #3355dd;
+  --accent-text: #ffffff;
+  --problem: #b3261e;
+  --done: #1e6b34;
+  --done-bg: #e3f3e6;
+  --warning-bg: #fff4d6;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121214;
+    --surface: #1c1c20;
+    --text: #ececee;
+    --muted: #a0a0a8;
+    --line: #34343a;
+    --accent: #7d95ff;
+    --accent-text: #0d0d12;
+    --problem: #ff8a80;
+    --done: #8fdc9f;
+    --done-bg: #14301b;
+    --warning-bg: #3a3014;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Flex layouts below would otherwise show hidden elements. */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font:
+    16px/1.5 system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: var(--accent);
+}
+
+header,
+footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+header {
+  justify-content: space-between;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 1.25rem;
+  text-decoration: none;
+  color: var(--text);
+}
+
+nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+nav form {
+  margin: 0;
+}
+
+footer {
+  margin-top: auto;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+footer a {
+  color: var(--muted);
+}
+
+main {
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 8px 16px 48px;
+}
+
+h1 {
+  font-size: 1.75rem;
+  line-height: 1.2;
+  margin: 16px 0;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 420px;
+  margin: 16px 0;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-weight: 600;
+}
+
+label.check {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: 400;
+}
+
+label.check input {
+  margin-top: 4px;
+}
+
+input[type="email"],
+input[type="password"],
+input[type="text"],
+input[type="url"],
+select,
+textarea {
+  font: inherit;
+  font-weight: 400;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  width: 100%;
+}
+
+input:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+button.link {
+  background: none;
+  color: var(--accent);
+  padding: 0;
+  font-weight: 400;
+  text-decoration: underline;
+}
+
+form[aria-busy] button[type="submit"]::after {
+  content: " …";
+}
+
+.note {
+  color: var(--muted);
+  font-size: 0.9375rem;
+  margin: 0;
+}
+
+.problem {
+  color: var(--problem);
+  margin: 0;
+}
+
+.problem:empty {
+  display: none;
+}
+
+.done {
+  color: var(--done);
+  background: var(--done-bg);
+  padding: 0.6rem 0.8rem;
+  border-radius: 6px;
+}
+
+.warning {
+  background: var(--warning-bg);
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+
+.prose li {
+  margin-bottom: 8px;
+}
+
+.mail {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.mail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface);
+  padding: 12px;
+  border-radius: 8px;
+}
+
+.cf-turnstile {
+  min-height: 65px;
+}
+
+select {
+  appearance: auto;
+}
+
+textarea {
+  resize: vertical;
+}
+
+fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+legend {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+button.danger {
+  background: var(--problem);
+}
+
+a.button {
+  display: inline-block;
+  font-weight: 600;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  text-decoration: none;
+}
+
+.rows {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+  border-top: 1px solid var(--line);
+}
+
+.rows > li {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.rows .note {
+  margin-top: 2px;
+}
+
+.row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--accent);
+  margin-top: 4px;
+}
+
+details form {
+  margin: 12px 0;
+}
+
+/* Profile pictures: vault.js sets the colour from sync-core's PROFILE_COLORS, through the CSSOM. */
+.pic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--line);
+  color: #ffffff;
+  font-weight: 700;
+  line-height: 1;
+  align-self: center;
+}
+
+.swatches {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.swatches legend {
+  width: 100%;
+}
+
+label.swatch {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+label.swatch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+
+label.swatch [data-swatch] {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  box-shadow: inset 0 0 0 2px var(--surface);
+}
+
+label.swatch input:checked + [data-swatch] {
+  border-color: var(--text);
+}
+
+label.swatch input:focus-visible + [data-swatch] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A recovery key just made: shown once, and printed alone. */
+.recovery-shown {
+  background: var(--warning-bg);
+  padding: 4px 16px;
+  border-radius: 8px;
+}
+
+.recovery-key {
+  font-size: 1.25rem;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+}
+
+@media print {
+  body > header,
+  body > footer,
+  main > section:not(.recovery-shown),
+  main > :not(section),
+  .recovery-shown button {
+    display: none !important;
+  }
+}

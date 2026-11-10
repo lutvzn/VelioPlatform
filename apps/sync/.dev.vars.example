@@ -1,0 +1,11 @@
+# Copy to .dev.vars for `wrangler dev`. DEV_MODE=1 keeps emails in the dev_outbox
+# table (shown at /dev/outbox) and skips Turnstile. Never set it in production.
+DEV_MODE=1
+PRELOGIN_SECRET=dev-only-prelogin-secret
+TURNSTILE_SECRET=dev-only
+# Cloudflare's test site key: always passes, on any host.
+TURNSTILE_SITE_KEY=1x00000000000000000000AA
+# Production only: set with `wrangler secret put RESEND_API_KEY` to send with Resend.
+RESEND_API_KEY=
+# The operator token for /ops (scripts/ops.mjs). Production: `wrangler secret put OPS_TOKEN`.
+OPS_TOKEN=dev-only-ops-token

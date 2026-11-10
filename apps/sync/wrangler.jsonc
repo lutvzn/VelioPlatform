@@ -1,0 +1,52 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "velio-sync",
+  "main": "src/worker.tsx",
+  // At most the date of the workerd release installed (1.20260815).
+  "compatibility_date": "2026-08-15",
+  "observability": { "enabled": true },
+  // Only velio.tv: no workers.dev address.
+  "workers_dev": false,
+  "preview_urls": false,
+  // The site, sign-in, sync and /v1 all live on velio.tv itself, with no subdomains.
+  // Needs the velio.tv zone in the same Cloudflare account as the Worker (PLAN.md, Stack).
+  "routes": [{ "pattern": "velio.tv", "custom_domain": true }],
+
+  // The page scripts and styles, built into public/ by scripts/build-client.mjs.
+  "build": { "command": "node scripts/build-client.mjs" },
+  "assets": { "directory": "./public" },
+
+  "vars": {
+    "SITE_URL": "https://velio.tv",
+    "EMAIL_FROM": "no-reply@velio.tv",
+    // Notices from /abuse go here; closed accounts are told to write here (PLAN.md, "Legal and abuse").
+    "ABUSE_EMAIL": "abuse@velio.tv",
+    // Public: the Turnstile widget for velio.tv (made 2026-11-10).
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAF64ZpIEdHiovd_h",
+  },
+  // Secrets, set with `wrangler secret put` (and in .dev.vars for wrangler dev):
+  //   PRELOGIN_SECRET   makes the salts answered for emails with no account
+  //   TURNSTILE_SECRET  checks sign-up and reset forms
+  //   RESEND_API_KEY    optional: send email with Resend instead of Cloudflare Email Service
+  //   OPS_TOKEN         the operator's bearer token for /ops (scripts/ops.mjs); without it, /ops is a 404
+
+  "d1_databases": [
+    { "binding": "DB", "database_name": "velio", "database_id": "5f3306d2-9e45-4e6f-a6ff-a915c38bfdd2" },
+  ],
+  "durable_objects": { "bindings": [{ "name": "ACCOUNT", "class_name": "Account" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Account"] }],
+  "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["no-reply@velio.tv"] }],
+
+  // Per key, per Cloudflare location (PLAN.md, Stack: abuse limits).
+  "ratelimits": [
+    // Sign-in and salt look-ups, per IP address.
+    { "name": "AUTH_LIMIT", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+    // Sign-in attempts and emails sent, per email address.
+    { "name": "EMAIL_LIMIT", "namespace_id": "1002", "simple": { "limit": 5, "period": 60 } },
+    // Sign-ups and reset requests, per IP address.
+    { "name": "SIGNUP_LIMIT", "namespace_id": "1003", "simple": { "limit": 5, "period": 60 } },
+  ],
+
+  // Daily: delete unconfirmed accounts after 7 days, and expired sessions and links.
+  "triggers": { "crons": ["17 4 * * *"] },
+}
