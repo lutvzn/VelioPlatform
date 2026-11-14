@@ -207,7 +207,7 @@ pub fn reopened_mail(site: &str, to: &str) -> Mail {
         subject: "Your Velio account is open again".into(),
         text: format!(
             "Your Velio account ({to}) is open again, with your lists and profiles. Sign in at {site}/signin. \
-             TVs that were signed out need to be signed in again.\n\nVelio · {site}\n"
+             Your TVs were signed out when it closed: remove them on the TVs page, and sign them in again.\n\nVelio · {site}\n"
         ),
     }
 }

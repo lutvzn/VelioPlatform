@@ -116,10 +116,13 @@ pub struct Prelogin {
     pub kdf: Kdf,
 }
 
-/// The account's salt and settings, or made-up ones that stay the same for that email.
+/// The account's salt and settings, or made-up ones that stay the same for
+/// that email. A closed account keeps its own until its data is deleted (the
+/// salt goes then), so its owner's password still matches and sign-in can say
+/// it's closed. That tells no one else anything: a made-up salt looks the same.
 pub fn prelogin_for(secret: &str, email: &str, account: Option<&Account>) -> Prelogin {
     match account {
-        Some(account) if account.closed_at.is_none() => Prelogin { salt: account.salt.clone(), kdf: account.kdf },
+        Some(account) if !account.salt.is_empty() => Prelogin { salt: account.salt.clone(), kdf: account.kdf },
         _ => {
             let salt = &hmac_sha256(secret, format!("prelogin salt\n{email}"))[..SALT_BYTES];
             Prelogin { salt: BASE64.encode(salt), kdf: DEFAULT_KDF }

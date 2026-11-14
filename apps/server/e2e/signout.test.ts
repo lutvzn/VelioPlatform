@@ -37,10 +37,10 @@ describe("a TV signing out", () => {
     const state = await accountStub(env, browser.accountId).getState();
     expect(state.devices.map(device => device.id)).toContain(trust.device);
     const devices = await (await request(browser.visitor, "/devices")).text();
-    expect(devices).toContain("Signed out on the TV");
+    expect(devices).toContain("Signed out");
     expect(devices).toContain('data-velio="device-remove"');
     expect(devices).not.toContain('data-velio="device-profiles"');
-    expect(await (await request(browser.visitor, "/account")).text()).toContain("Signed out on the TV");
+    expect(await (await request(browser.visitor, "/account")).text()).toContain("Signed out:");
   });
 
   it("needs the TV's token", async () => {

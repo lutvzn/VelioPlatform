@@ -236,7 +236,7 @@ fn devices(devices: &[DeviceRow]) -> Markup {
                 count => p { "You have " (count) " TVs." },
             }
             @if signed_out > 0 {
-                p .note { "Signed out on the TV: " (signed_out) ". Remove it on the TVs page to take it off the account." }
+                p .note { "Signed out: " (signed_out) ". Remove it on the TVs page to take it off the account." }
             }
             p {
                 a href="/pair" .button { "Sign in a TV" }

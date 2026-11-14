@@ -164,7 +164,7 @@ pub fn device_status(device: &DeviceRow) -> String {
             let synced = device.last_pulled_at.map(|at| format!(", last synced {}", day(at))).unwrap_or_default();
             format!("Signed in {}{synced}", day(device.created_at))
         }
-        Some(at) => format!("Signed out on the TV {}. Remove it to take it off the account.", day(at)),
+        Some(at) => format!("Signed out {}. Remove it to take it off the account.", day(at)),
     }
 }
 

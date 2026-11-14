@@ -195,8 +195,8 @@ pub fn ops_app() -> Markup {
                 form method="dialog" #reopen-form {
                     h2 { "Open " span data-email {} " again?" }
                     p {
-                        "The owner can sign in again and is emailed. Their lists and profiles come back; TVs have to be \
-                         signed in again."
+                        "The owner can sign in again and is emailed. Their lists and profiles come back; TVs stay signed \
+                         out, and have to be signed in again."
                     }
                     p .problem role="alert" data-problem {}
                     (actions(html! { button type="submit" { "Open it again" } }))

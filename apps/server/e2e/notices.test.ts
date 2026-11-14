@@ -9,7 +9,18 @@ import { accountStub } from "./support/account.ts";
 import { cleanUp } from "./support/cleanup.ts";
 import { CLOSED_KEEP_MS } from "./support/constants.ts";
 import { newOpsSession, OPS_COOKIE, OPS_SESSION_MS } from "./support/opsSession.ts";
-import { fresh, lastMail, post, request, signin, SITE, worker, type Visitor } from "./helpers.ts";
+import {
+  fresh,
+  lastMail,
+  post,
+  request,
+  sessionCookie,
+  signedInAccount,
+  signin,
+  SITE,
+  worker,
+  type Visitor,
+} from "./helpers.ts";
 import { connect, pull, signedInTv } from "./tv.ts";
 
 const ABUSE = "abuse@velio.tv";
@@ -36,6 +47,18 @@ const ops = (path: string, init: { method?: string; body?: unknown; token?: stri
     },
     body: init.body ? JSON.stringify(init.body) : undefined,
   });
+
+/** What vault.js derives the sign-in key from. */
+const saltFor = async (email: string) =>
+  (await (await request(fresh(), `/prelogin?email=${encodeURIComponent(email)}`)).json<{ salt: string }>())
+    .salt;
+
+const tvsOf = async (accountId: string) =>
+  env.DB.prepare(
+    "SELECT count(*) AS total, count(*) FILTER (WHERE signed_out_at IS NULL) AS signedIn FROM devices WHERE account_id = ?",
+  )
+    .bind(accountId)
+    .first();
 
 const sendNotice = async (fields: Record<string, string>) => {
   const answer = await post(fresh(), "/abuse", fields);
@@ -213,9 +236,14 @@ describe("closing an account", () => {
     expect((await request(browser.visitor, "/account")).status).toBe(302);
     expect((await pull(tv, token)).status).toBe(401);
     await vi.waitFor(() => expect(socket.closes).toEqual([4401]));
+    // The salt is still the account's own, so the owner's password still makes the key that
+    // matches, and sign-in says the account is closed, not that the password is wrong.
+    expect(await saltFor(email)).toBe(credentials.fields.salt);
     const refused = await signin({ ip: browser.visitor.ip }, email, credentials.authKey);
     expect(refused.status).toBe(403);
     expect(await refused.text()).toBe("This account is closed.");
+    // The TV is signed out, not only refused.
+    expect(await tvsOf(browser.accountId)).toEqual({ total: 1, signedIn: 0 });
     const toOwner = await lastMail(email);
     expect(toOwner?.subject).toBe("Your Velio account is closed");
     expect(toOwner?.text).toContain(reason);
@@ -234,12 +262,43 @@ describe("closing an account", () => {
     expect((await ops(`/accounts/${encodeURIComponent(email)}`)).status).toBe(200);
     expect((await ops(`/accounts/${browser.accountId}/reopen`, { method: "POST" })).status).toBe(200);
     expect((await lastMail(email))?.subject).toBe("Your Velio account is open again");
-    expect((await signin({ ip: browser.visitor.ip }, email, credentials.authKey)).status).toBe(200);
+    const opened = await signin({ ip: browser.visitor.ip }, email, credentials.authKey);
+    expect(opened.status).toBe(200);
     expect(await accountStub(env, browser.accountId).getOwner()).not.toBeNull();
+    // Its TV stays signed out: the old token opens nothing, and the owner sees it to remove it.
+    expect((await pull(tv, token)).status).toBe(401);
+    expect(await tvsOf(browser.accountId)).toEqual({ total: 1, signedIn: 0 });
+    const devices = await (
+      await request({ ip: browser.visitor.ip, cookie: sessionCookie(opened) }, "/devices")
+    ).text();
+    expect(devices).toContain("Signed out");
+  });
+
+  it("from a notice already handled: adds to what was done, not in its place", async () => {
+    const { email, browser } = await signedInAccount();
+    const notice = await sendNotice(copyright(email));
+    if (!notice.id) throw new Error("No reference");
+    const first = "Asked the owner to remove the list.";
+    expect(
+      (await ops(`/notices/${notice.id}`, { method: "POST", body: { status: "rejected", action: first } }))
+        .status,
+    ).toBe(200);
+    expect(
+      (
+        await ops(`/accounts/${browser.accountId}/close`, {
+          method: "POST",
+          body: { reason: "The list stayed.", notice: notice.id, confirm: email },
+        })
+      ).status,
+    ).toBe(200);
+    const row = await env.DB.prepare("SELECT status, action FROM notices WHERE id = ?")
+      .bind(notice.id)
+      .first();
+    expect(row).toEqual({ status: "actioned", action: `${first}\nAccount closed: The list stayed.` });
   });
 
   it("marks the notice it acts on, and deletes the data after 30 days", async () => {
-    const { email, browser, tv, token } = await signedInTv();
+    const { email, browser, credentials, tv, token } = await signedInTv();
     const notice = await sendNotice(copyright(email));
     if (!notice.id) throw new Error("No reference");
     const closed = await ops(`/accounts/${browser.accountId}/close`, {
@@ -264,6 +323,8 @@ describe("closing an account", () => {
       .bind(browser.accountId)
       .first();
     expect(account).toMatchObject({ email, closed_reason: "Two valid copyright notices.", auth_hash: "" });
+    // With the salt gone, /prelogin makes one up, as for an email with no account.
+    expect(await saltFor(email)).not.toBe(credentials.fields.salt);
     expect(
       await env.DB.prepare("SELECT count(*) AS n FROM devices WHERE account_id = ?")
         .bind(browser.accountId)

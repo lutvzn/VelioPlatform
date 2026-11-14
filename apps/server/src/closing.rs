@@ -1,10 +1,10 @@
 //! Closing an account (the Worker's `lib/closing.ts`; PLAN.md, "Legal and
 //! abuse"): for a valid notice or a broken term, done by the operator through
 //! /ops. Velio can't read or remove one list, so it closes the account:
-//! sessions, links and pairings end, TVs are refused (their sockets are closed
-//! as removed), the owner is told why, and the encrypted data is deleted after
-//! 30 days. Until then it can be opened again. The row stays, so the email
-//! can't simply sign up again.
+//! sessions, links and pairings end, TVs are signed out (their sockets are
+//! closed as removed), the owner is told why, and the encrypted data is
+//! deleted after 30 days. Until then it can be opened again. The row stays, so
+//! the email can't simply sign up again.
 
 use anyhow::Result;
 use axum::http::StatusCode;
@@ -62,10 +62,21 @@ pub fn close_account(
     for table in ["sessions", "email_links", "pairings"] {
         tx.execute(&format!("DELETE FROM {table} WHERE account_id = ?"), [account_id])?;
     }
+    // Signed out as a TV signs itself out (tv.rs): their tokens open nothing,
+    // even if the account is opened again, and they stay in the signed
+    // manifest until the owner removes them.
+    tx.execute(
+        "UPDATE devices SET token_hash = 'signed-out:' || id, signed_out_at = ?
+         WHERE account_id = ? AND signed_out_at IS NULL",
+        params![now, account_id],
+    )?;
     if let Some(notice_id) = notice_id {
+        // Added to what was already done with the notice, not put in its place.
         tx.execute(
-            "UPDATE notices SET status = 'actioned', action = ?, handled_at = ? WHERE id = ?",
-            params![format!("Account closed: {reason}"), now, notice_id],
+            "UPDATE notices SET status = 'actioned', handled_at = ?1,
+               action = CASE WHEN action = '' THEN ?2 ELSE action || char(10) || ?2 END
+             WHERE id = ?3",
+            params![now, format!("Account closed: {reason}"), notice_id],
         )?;
     }
     tx.commit()?;
