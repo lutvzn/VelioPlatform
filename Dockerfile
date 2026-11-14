@@ -10,13 +10,13 @@ FROM node:26-slim AS client
 WORKDIR /src
 RUN npm install --global --no-fund --no-audit pnpm@12.14.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY apps/sync/package.json apps/sync/
+COPY apps/server/package.json apps/server/
 COPY packages/sync-core/package.json packages/sync-core/
-RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@velio/sync..."
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@velio/server..."
 COPY packages/sync-core/src packages/sync-core/src
-COPY apps/sync/scripts/build-client.mjs apps/sync/scripts/
-COPY apps/sync/src/client apps/sync/src/client
-RUN node apps/sync/scripts/build-client.mjs
+COPY apps/server/scripts/build-client.mjs apps/server/scripts/
+COPY apps/server/client apps/server/client
+RUN node apps/server/scripts/build-client.mjs
 
 # --- The server, linked statically against musl ---
 FROM rust:1.99-alpine AS server
@@ -27,8 +27,8 @@ COPY apps/server/migrations migrations
 COPY apps/server/src src
 # Embedded in the binary: the static files (src/assets.rs), and the probe's
 # test account (src/routes/probe.rs).
-COPY --from=client /src/apps/sync/public/static /src/apps/sync/public/static
-COPY apps/sync/src/probe/test-account.json /src/apps/sync/src/probe/
+COPY --from=client /src/apps/server/public/static public/static
+COPY apps/server/probe/test-account.json probe/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/apps/server/target \
     cargo build --release --locked \

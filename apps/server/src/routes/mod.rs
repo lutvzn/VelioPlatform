@@ -1,4 +1,4 @@
-//! The routes, by area, as the Worker's `apps/sync/src/routes`.
+//! The routes, by area, as the Worker's `src/routes` were.
 
 pub mod accounts;
 pub mod notices;

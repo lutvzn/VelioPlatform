@@ -1,0 +1,9 @@
+{
+  // Node: the tests run in vitest's process and reach the server over HTTP.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "include": [".", "../vitest.config.ts"]
+}

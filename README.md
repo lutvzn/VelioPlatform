@@ -7,41 +7,43 @@ is the design, with what each phase built and how it was checked.
 ## Layout
 
 ```
-apps/server/           the Rust server (axum, maud, SQLite): what velio.tv runs, and anyone can self-host
+apps/server/           the server (Rust: axum, maud, SQLite): what velio.tv runs, and anyone can self-host
   src/routes/          web pages, vault, pairing, settings, /v1 for TVs, notices, /ops
-  src/views/           pages, written with maud: the Worker's markup
+  src/views/           pages, written with maud
   src/sync_core/       the server's half of sync-core, checked against tests/vectors.json
   migrations/          the one SQLite database
+  client/              vault.js, ops.js and the styles: the browser half, where all encryption happens
+  scripts/             build-client.mjs (builds public/static, which the binary embeds), ops.mjs
+  e2e/                 tests over HTTP, against the server binary
 Dockerfile             the distroless image
-apps/sync/             the Cloudflare Worker: the web pages on velio.tv and /v1 for TVs
-  src/worker.tsx       middleware (headers, body limits, sessions, same-origin posts) and routes
-  src/account.ts       the Account Durable Object: one SQLite database per account
-  src/routes/          web (sign-up, sign-in, resets), vault (lists, profiles), pair, settings, tv (/v1)
-  src/views/           pages, written with hono/jsx
-  src/client/          vault.js and app.css: the browser half, where all encryption happens
-  migrations/          D1 (accounts, sessions, email links, devices, pairings, notices)
-  test/                Worker tests, in the Workers runtime
-packages/sync-core/    shared by the browser, the Worker and (later) VelioTV:
+packages/sync-core/    shared by the browser, the server's tests and (later) VelioTV:
                        keys, sealing, signing, records, changes, pairing, pulls, export
 ```
 
 ## Working on it
 
-Run everything on the host (not in VelioTV's distrobox). Node 22 or newer.
+Run everything on the host (not in VelioTV's distrobox). Node 22 or newer,
+and Rust (the version in the Dockerfile).
 
 ```sh
 npx -y pnpm@12.14.0 install
-cp apps/sync/.dev.vars.example apps/sync/.dev.vars   # DEV_MODE, PRELOGIN_SECRET, TURNSTILE_SECRET
-npx -y pnpm@12.14.0 check                            # format, lint, types, all tests
+npx -y pnpm@12.14.0 check      # format, lint, types, the Rust checks, all tests
 ```
 
-Local server, at http://127.0.0.1:8787 (emails go to `/dev/outbox`):
+Local server, at http://localhost:8787 (emails go to `/dev/outbox`). Build
+the client first: the binary embeds it, so `cargo` fails without it, and a
+change to `client/` needs a new build and a new `cargo run`.
 
 ```sh
-cd apps/sync
-npx wrangler d1 migrations apply DB --local
-npm run build && npx wrangler dev --port 8787 --ip 127.0.0.1
+npx -y pnpm@12.14.0 --filter @velio/server build
+cd apps/server
+DEV_MODE=1 VELIO_SITE_URL=http://localhost:8787 PRELOGIN_SECRET=dev OPS_TOKEN=dev-ops-token \
+  EMAIL_FROM=no-reply@velio.test ABUSE_EMAIL=abuse@velio.test cargo run
 ```
+
+That keeps the database in `apps/server/velio.db`. Use `localhost`, not
+`127.0.0.1`: the `/ops` cookie is `Secure`, and over plain HTTP only
+`localhost` keeps it.
 
 ## Running the server
 
@@ -162,54 +164,38 @@ The velio container trusts the whole subnet, which only it and
 `cloudflared` are on, and publishes no port. Check a request's line in
 `docker logs velio`: it should show your own IP, not `172.30.0.x`.
 
-## Deploying the Worker (until R6 is done)
-
-Only to velio.tv (no workers.dev, no subdomains). Apply new D1 migrations
-first, then deploy:
-
-```sh
-cd apps/sync
-npx wrangler d1 migrations list DB --remote     # then `apply` if any are listed
-npm run build && npx wrangler deploy
-```
-
-Secrets are set with `npx wrangler secret put`: `PRELOGIN_SECRET`,
-`TURNSTILE_SECRET`, `OPS_TOKEN` (the operator's token for `/ops`), and
-optionally `RESEND_API_KEY`.
-
 ## Notices and closing accounts
 
-Notices from `/abuse` are mailed to `abuse@velio.tv` and kept in D1. Handle
-them at **https://velio.tv/ops**: sign in with the `OPS_TOKEN` secret (a
+Notices from `/abuse` are mailed to `ABUSE_EMAIL` and kept in the database. Handle
+them at **https://velio.tv/ops**: sign in with `OPS_TOKEN` (a
 password manager can keep it under the user name `velio-operator`). It lists
 the notices, shows the account each one names, and closes, opens and marks
 them. **Accounts** lists every account, newest first, by state, and
-narrowed by part of an email or an id (on the Rust server); it also sets an account's TV limit, from 1 to
+narrowed by part of an email or an id; it also sets an account's TV limit, from 1 to
 `VELIO_TV_LIMIT_MAX`, or back to the default (`VELIO_TV_LIMIT`); a limit
 below the TVs an account has keeps them and stops new ones. Closing needs a reason and the account's email typed again; velio.tv
 checks the email too and changes nothing if it doesn't match. The session is
 a cookie for `/ops` only, lasting 8 hours; **Sign out** ends it, and changing
-`OPS_TOKEN` ends every session. Locally it is http://127.0.0.1:8787/ops, with
-the token in `.dev.vars`.
+`OPS_TOKEN` ends every session. Locally it is http://localhost:8787/ops.
 
 The same from a terminal:
 
 ```sh
-cd apps/sync
-export VELIO_OPS_TOKEN=...                       # the OPS_TOKEN secret
+cd apps/server
+export VELIO_OPS_TOKEN=...                       # OPS_TOKEN
 node scripts/ops.mjs notices                     # open notices
 node scripts/ops.mjs notice N-XXXXXXXX           # one notice, with the account it names
 node scripts/ops.mjs close owner@example.com "Reason the owner reads" --notice N-XXXXXXXX
 node scripts/ops.mjs handle N-XXXXXXXX rejected "What was done"
 node scripts/ops.mjs reopen owner@example.com    # within 30 days
-node scripts/ops.mjs tv-limit owner@example.com 20   # or "default"; the Rust server only
+node scripts/ops.mjs tv-limit owner@example.com 20   # or "default"
 ```
 
 `close` shows the account and asks for its email to be typed (or takes
-`--confirm <email>`). `VELIO_SITE=http://127.0.0.1:8787` points the tool at
-`wrangler dev`.
+`--confirm <email>`). `VELIO_SITE=http://localhost:8787` points the tool at
+a local server.
 
-A closed account's data is deleted by the daily cron 30 days
+A closed account's data is deleted by the nightly clean-up 30 days
 after closing.
 
 ## Security model, in short

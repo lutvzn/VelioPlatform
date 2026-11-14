@@ -1,6 +1,5 @@
 node_modules/
 dist/
-.wrangler/
 # The Rust server's build
 target/
 .dev.vars
@@ -9,3 +8,8 @@ target/
 # Local details (domains, account IDs); keep them out of the repo
 PRIVATE.md
 public/
+
+# Local databases (cargo run keeps velio.db in apps/server)
+*.db
+*.db-wal
+*.db-shm

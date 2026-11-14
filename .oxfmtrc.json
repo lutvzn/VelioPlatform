@@ -11,8 +11,6 @@
     ".DS_store",
     "dist",
     ".env",
-    ".wrangler",
-    "worker-configuration.d.ts",
     "pnpm-lock.yaml",
     "apps/server/tests/vectors.json"
   ]

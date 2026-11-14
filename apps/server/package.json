@@ -1,0 +1,20 @@
+{
+  "name": "@velio/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The browser half of the Velio server (client/), its build, and the tests against the server (e2e/).",
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "test-account": "node scripts/make-test-account.ts",
+    "tsc": "tsc -p client && tsc -p e2e",
+    "test": "node scripts/build-client.mjs && vitest run"
+  },
+  "dependencies": {
+    "@velio/sync-core": "workspace:*",
+    "htmx.org": "4.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

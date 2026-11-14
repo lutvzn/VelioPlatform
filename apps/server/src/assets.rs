@@ -1,5 +1,5 @@
 //! /static: what the browser loads (vault.js, ops.js, HTMX, the styles),
-//! built by `apps/sync/scripts/build-client.mjs` and embedded in the binary.
+//! built from client/ by `scripts/build-client.mjs` and embedded in the binary.
 //! The names have no hash, so browsers check for a new version each time (an
 //! ETag makes that cheap): a page from a new server never runs with an old
 //! vault.js.
@@ -16,7 +16,7 @@ use crate::http::StaticAsset;
 use crate::web::Web;
 
 #[derive(RustEmbed)]
-#[folder = "../sync/public/static/"]
+#[folder = "public/static/"]
 struct Static;
 
 pub fn router() -> Router<AppState> {

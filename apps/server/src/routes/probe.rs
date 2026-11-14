@@ -23,12 +23,12 @@ use crate::AppState;
 use crate::http::{ClientIp, text};
 
 /// How many "rev N" messages the test socket sends, and how far apart
-/// (`apps/sync/src/probe/events.ts`).
+/// (e2e/probe.test.ts counts them).
 pub const EVENT_COUNT: u32 = 5;
 pub const EVENT_GAP: Duration = Duration::from_millis(500);
 
-/// Made by `pnpm --filter @velio/sync test-account`.
-const TEST_ACCOUNT: &str = include_str!("../../../sync/src/probe/test-account.json");
+/// Made by `pnpm --filter @velio/server test-account`.
+const TEST_ACCOUNT: &str = include_str!("../../probe/test-account.json");
 
 pub fn router() -> Router<AppState> {
     Router::new()

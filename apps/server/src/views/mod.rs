@@ -1,5 +1,5 @@
 //! Pages and the fragments HTMX swaps into #main, in maud. The markup is the
-//! Worker's (`apps/sync/src/views`), so vault.js and the styles work as they
+//! Worker's (`src/views`), so vault.js and the styles work as they
 //! are.
 
 pub mod accounts;

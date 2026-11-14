@@ -1,6 +1,6 @@
 //! The operator's page and API (the Worker's `routes/opsPage.tsx` and
 //! `routes/ops.ts`; PLAN.md, "Legal and abuse"), used at /ops and by
-//! `apps/sync/scripts/ops.mjs`: notices, and closing and opening accounts.
+//! `scripts/ops.mjs`: notices, and closing and opening accounts.
 //! Without OPS_TOKEN set, /ops is a 404.
 //!
 //! Two ways into the API: the secret as a bearer token (the command-line

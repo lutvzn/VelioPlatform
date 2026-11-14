@@ -126,7 +126,7 @@
       }
     },
     {
-      "files": ["scripts/**/*.mjs", "**/vitest.config.ts"],
+      "files": ["**/scripts/**/*.mjs", "**/vitest.config.ts"],
       "env": {
         "node": true,
         "browser": false
@@ -137,7 +137,7 @@
     "dist/**",
     "node_modules/**",
     ".claude/**",
-    ".wrangler/**",
-    "**/worker-configuration.d.ts"
+    "apps/server/target/**",
+    "apps/server/public/**"
   ]
 }

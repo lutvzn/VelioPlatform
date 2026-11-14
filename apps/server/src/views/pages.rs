@@ -1,6 +1,6 @@
 //! Pages anyone can read. Neutral wording only: "your own IPTV
 //! subscriptions", never content or providers (PLAN.md, "Legal and abuse", 4).
-//! The words are the Worker's (`apps/sync/src/views/pages.tsx`), except who
+//! The words are the Worker's (`src/views/pages.tsx`), except who
 //! handles what (R6): that follows the settings, as the server can run
 //! anywhere, behind any proxy.
 

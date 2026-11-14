@@ -276,25 +276,20 @@ What courts and prosecutors have acted on in IPTV cases is selling or promoting 
 VelioPlatform/
   PLAN.md, README.md        the plan; setup, checks, deploying, and the security model in short
   package.json, pnpm-workspace.yaml
-  apps/sync/                 the Worker
-    wrangler.jsonc
-    migrations/0001_accounts.sql, 0002_devices.sql, 0003_notices.sql, 0004_device_signout.sql
-    scripts/build-client.mjs builds public/ (vault.js, pinned HTMX, app.css, _headers)
-    scripts/ops.mjs          the operator's tool: notices, closing and opening accounts
-    src/worker.tsx           Hono app, the cron, and the Account class export
-    src/routes/web.tsx       accounts: pages and forms; src/routes/probe.ts, Phase 0's /v1/probe
-    src/routes/vault.tsx     profiles and lists, POST /changes, POST /unlock
-    src/routes/pair.tsx      signing in a TV, the phone's half: /pair, /pair/find, /pair/:id
-    src/routes/tv.ts         /v1 for TVs: POST /v1/pair, GET /v1/pair/:id, GET /v1/sync, GET /v1/events, POST /v1/signout
-    src/routes/settings.tsx  the password, the recovery key, deleting the account
-    src/routes/ops.ts        /ops/*: the operator's API, notices and closing accounts
-    src/routes/opsPage.tsx   /ops: the operator's page and its sign-in (lib/opsSession.ts, views/ops.tsx, client/ops.ts)
-    src/lib/notices.ts, closing.ts  the /abuse form's notices; closing, opening and deleting closed accounts
-    src/lib/*.ts             accounts and links, sessions, mail, Turnstile, limits, headers; vault.ts, page data and TVs
-    src/account.ts           the per-account Durable Object
-    src/views/*.tsx          pages and fragments for HTMX (vault.tsx: profiles and lists; pair.tsx: signing in a TV)
-    src/client/vault.ts      built to public/vault.js
-    public/                  built, not committed: htmx.min.js (pinned), app.css, vault.js
+  Dockerfile                 the distroless image
+  apps/server/               the server (Rust: axum, maud, rusqlite), what velio.tv runs
+    Cargo.toml, migrations/  0001_init.sql, 0002_sealed_device_names.sql, 0003_tv_limits.sql
+    src/main.rs, lib.rs      settings, the app, the nightly clean-up and backups; `health`, `backup`, `clean-up`
+    src/routes/*.rs          web (accounts), vault, pair, settings, tv (/v1), probe, notices, ops
+    src/views/*.rs           pages and fragments for HTMX, in maud: the Worker's markup
+    src/vault.rs             each account's vault: owner, manifest, profiles, lists, TVs' keys
+    src/events.rs            the TVs' sockets
+    src/sync_core/           the server's half of sync-core, checked against tests/vectors.json
+    client/                  vault.ts, ops.ts, app.css, ops.css: the browser half, where all encryption happens
+    scripts/build-client.mjs builds public/static (vault.js, ops.js, pinned HTMX, the styles), which the binary embeds
+    scripts/ops.mjs          the operator's tool: notices, closing and opening accounts, TV limits
+    probe/test-account.json  the made-up account GET /v1/probe/test-account serves (scripts/make-test-account.ts)
+    e2e/*.test.ts            the tests over HTTP, against the binary (e2e/support/ starts it)
   packages/sync-core/        shared with VelioTV and later apps
     src/bytes.ts, crypto.ts  base64, UTF-8, sealing, wrapping, boxing, signing (TweetNaCl)
     src/account.ts, login.ts password rules, Argon2id settings; login.ts adds hash-wasm and the recovery key (web only)
@@ -622,7 +617,7 @@ The user's choice: the server becomes **self-hostable**, written in **Rust**, wi
 
 Decided with the user, 2026-11-13:
 
-- **Built alongside, then the Worker deleted.** The Rust server lives in `apps/server`. velio.tv stays on the Worker until the Rust server passes the same tests, then velio.tv moves and `apps/sync` is removed.
+- **Built alongside, then the Worker deleted.** The Rust server lives in `apps/server`. velio.tv stays on the Worker until the Rust server passes the same tests, then velio.tv moves and `apps/sync` is removed. (The user chose to remove `apps/sync` first, 2026-11-14: see "`apps/sync` deleted".)
 - **Starting fresh.** velio.tv holds only test accounts (no real TV is signed in, as VelioTV's half isn't released), so nothing is migrated from D1 or the Durable Objects.
 - **Email over SMTP or Resend**, whichever is configured. **Turnstile is optional**: on when its keys are set (velio.tv sets them), otherwise sign-up and resets rely on the rate limits alone.
 - ~~velio.tv runs on a VPS behind Caddy.~~ Changed 2026-11-14: **the server ships as a distroless container image**, and whoever runs it picks their own reverse proxy. velio.tv runs it behind a **Cloudflare Tunnel**, with its DNS staying at Cloudflare. **Backups:** a nightly copy, kept 30 days on the host and also in S3-compatible storage. Which machine runs velio.tv's container isn't chosen yet.
@@ -704,7 +699,7 @@ The server refuses to start with a missing or malformed setting, rather than fai
 Three layers, so the port is exact rather than close:
 
 1. **Vectors from `sync-core`.** A script (`packages/sync-core/scripts/vectors.ts`) uses the TypeScript code as the reference. It builds accounts and changes, then writes each case as JSON with the state before, the input, and the expected result: the state after, or the problem (`behind`, `refused` or `limit`). The cases cover accepted changes of every kind, every refusal in `readChange()`, `checkMatches()` and `checkRekeyed()`, the limits, bad sizes and bad base64, plus `pullFor()` for TVs with different profiles. Rust's tests replay them, and `pnpm check` regenerates and compares them, so a change on either side that isn't made on both fails.
-2. **The Worker tests, over HTTP.** The 76 tests stay in `apps/sync/test` until R6, unchanged, and run twice: against the Worker (`vitest.config.ts`) and against the Rust server (`vitest.server.config.ts`, `pnpm --filter @velio/sync test:server`). The second config points `cloudflare:test` and `cloudflare:workers` at a stand-in (`test/server/runtime.ts`): its `fetch` sends each request to the server binary, which `test/server/globalSetup.ts` builds and starts on a free port with a temporary database and `DEV_MODE`, with `X-Forwarded-For` in place of `cf-connecting-ip`; an upgrade opens a real WebSocket. Its `env.DB` reads and writes the temporary database with `node:sqlite`. Each phase adds its files to the config's list, and `pending` names the tests that wait for a later phase. When all of them pass, the routes, answers, cookies and headers match. At R6 the tests and the stand-in move to `apps/server/test`, without the Worker config.
+2. **The Worker tests, over HTTP.** The 76 tests stay in `apps/sync/test` until R6, unchanged, and run twice: against the Worker (`vitest.config.ts`) and against the Rust server (`vitest.server.config.ts`, `pnpm --filter @velio/sync test:server`). The second config points `cloudflare:test` and `cloudflare:workers` at a stand-in (`test/server/runtime.ts`): its `fetch` sends each request to the server binary, which `test/server/globalSetup.ts` builds and starts on a free port with a temporary database and `DEV_MODE`, with `X-Forwarded-For` in place of `cf-connecting-ip`; an upgrade opens a real WebSocket. Its `env.DB` reads and writes the temporary database with `node:sqlite`. Each phase adds its files to the config's list, and `pending` names the tests that wait for a later phase. When all of them pass, the routes, answers, cookies and headers match. Since 2026-11-14 they are `apps/server/e2e`, without the Worker config.
 3. **Rust unit tests** for what the vectors don't reach: the rate limiter, sessions, the socket registry, configuration, and the clean-up's times.
 
 Then the same checks by hand as in Phases 1 to 8, in Chrome against the local server with a TV simulated in Node. Nothing sent may hold a password, a profile name or a list address.
@@ -730,7 +725,7 @@ The user's choice, in place of a "public" mode of 10 TVs and a "private" one wit
 
 - **The ceiling.** `MAX_DEVICES` in sync-core, now 50, is what any manifest may name: what still fits the manifest's 64,000 characters with 8 profiles, 50 lists and every TV on every profile (about 748 characters a TV entry; a test builds that account). `DEFAULT_DEVICE_LIMIT` is 10.
 - **Where it's checked.** `applyChange()` takes the account's limit (`deviceLimit`, default 10) and refuses, as `limit`, a change that would leave more TVs than that _and_ more than before. So a limit lowered below the TVs an account has keeps them and every other change working, and stops new ones until it's under. `withDevice()` takes it too, from the pairing form's `data-tv-limit`, so the phone says so before it signs anything. The vectors cover a TV past the limit, one within a limit given, and a change to an account over its limit.
-- **The Worker** keeps 10, as it passes no limit and is going.
+- **The Worker** kept 10, as it passed no limit.
 - **VelioTV** has to be built with this sync-core before any account goes past 10 TVs: older builds' `openPull()` refuses a manifest naming more than 10.
 - `/terms` says the default, from `VELIO_TV_LIMIT`.
 
@@ -828,6 +823,8 @@ The differences from the Worker:
 Phase 0's certificate question stays closed for velio.tv: behind the tunnel, TVs meet Cloudflare's edge and certificates, as they did the Worker's. Still run the `sync` probe from the test TV through the tunnel, to check the probe headers and the WebSocket.
 
 **R6, the repo half, 2026-11-14.** The root `Dockerfile` builds the client with pnpm (`node:26-slim`), the server on `rust:1.99-alpine` (musl, so the binary is static), and copies the binary into `gcr.io/distroless/static-debian13:nonroot` with `/data` as a volume. `.dockerignore` lets in only the sources it needs, so `.dev.vars` and `PRIVATE.md` never reach a build. In the server: `backup.rs` (the nightly copy, pruning, and the S3 upload, its signing checked against AWS's documented example), `VELIO_TRUSTED_PROXY` as ranges (a proxy container's address isn't fixed), `/healthz` and `velio-server health`, and `/privacy` and `/security` built from the settings. The tests and the stand-in stay in `apps/sync/test` until `apps/sync` is deleted, as do the client sources the image builds from.
+
+**`apps/sync` deleted, 2026-11-14**, before velio.tv moved, at the user's choice. What the Rust server still used moved to `apps/server` (the package `@velio/server`): the client sources to `client/`, `build-client.mjs` (now writing `public/static` only, without the Workers `_headers`), `ops.mjs` and `make-test-account.ts` to `scripts/`, the probe's test account to `probe/`, and the tests to `e2e/` with `vitest.config.ts`. The two Rust-only files are `.test.ts` now. The tests import their helpers by name (`e2e/support/`: `runtime.ts` for `env.DB` and `exports.default.fetch`, `account.ts`, `cleanup.ts`, `constants.ts`, `opsSession.ts`) instead of through `cloudflare:*` aliases, and the three constants they took from the Worker are copied from the Rust source. `pnpm check` runs `check:rust` (the client build first, as the binary embeds it), then every package's tests: 85 against the server. wrangler, workerd and the Workers vitest pool are gone from the lockfile. The Worker on velio.tv, its D1 database and Durable Objects are untouched, and it can only be redeployed from git history (3176ac7 or earlier).
 
 ## Open choices
 

@@ -1,5 +1,5 @@
 //! The operator's page at /ops (the Worker's `views/ops.tsx`): signing in,
-//! and the shell that ops.js (`apps/sync/src/client/ops.ts`) fills from the
+//! and the shell that ops.js (`client/ops.ts`) fills from the
 //! /ops API. No HTMX or vault.js here.
 
 use maud::{Markup, PreEscaped, html};
