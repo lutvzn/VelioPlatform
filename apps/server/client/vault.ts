@@ -987,10 +987,24 @@ const removeGoneWidgets = () => {
   widgets = [];
 };
 
+/** Marks the tab of the page shown. /pair is under TVs. A boosted link's
+ * address changes after its swap, so this runs again a moment later. */
+const markNav = () => {
+  const here = location.pathname === "/pair" ? "/devices" : location.pathname;
+  for (const link of document.querySelectorAll<HTMLAnchorElement>("#nav a")) {
+    const path = new URL(link.href).pathname;
+    if (here === path || here.startsWith(`${path}/`)) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
+};
+
 document.addEventListener("htmx:after:swap", () => {
   removeGoneWidgets();
   render();
+  markNav();
+  setTimeout(markNav, 0);
 });
+window.addEventListener("popstate", () => setTimeout(markNav, 0));
 document.addEventListener("htmx:response:error", () => {
   pendingUnlockKey = null;
   pendingRecoveryKey = null;
@@ -1014,6 +1028,7 @@ document.addEventListener("click", event => {
 
 /** On load: keys this browser remembers, then the page. */
 const start = async () => {
+  markNav();
   capturePairCode();
   const accountId = pageAccount();
   if (accountId) {

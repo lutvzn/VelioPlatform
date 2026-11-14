@@ -9,25 +9,44 @@ use maud::{Markup, html};
 use crate::backup::BACKUP_KEEP_DAYS;
 use crate::config::{Config, Mail};
 use crate::views::accounts::{problem, turnstile};
+use crate::views::layout::{ICON_LOCK, ICON_PHONE, ICON_SERVER, icon};
 
 pub fn home(signed_in: bool) -> Markup {
     html! {
-        section {
+        section .hero {
+            p .eyebrow { "End-to-end encrypted" }
             h1 { "Your lists, on every TV" }
-            p {
+            p .lead {
                 "Velio keeps the M3U playlists and Xtream logins of your own IPTV subscriptions in one account, and every \
                  VelioTV you sign in gets them. Type a login once here instead of with a remote on each TV."
             }
-            p {
-                "Your lists are encrypted in this browser with your password before they're sent. Velio's servers hold \
-                 only ciphertext: they can't read a playlist address, a server, a username or a password."
-            }
-            p {
+            div .cta {
                 @if signed_in {
-                    a href="/account" { "Go to your account" }
+                    a href="/lists" .button { "Go to your lists" }
+                    a href="/account" .button.secondary { "Your account" }
                 } @else {
-                    a href="/signup" hx-boost="false" { "Make an account" }
+                    a href="/signup" hx-boost="false" .button { "Make an account" }
+                    a href="/signin" .button.secondary { "Sign in" }
                 }
+            }
+        }
+        ul .features {
+            li {
+                (icon(ICON_LOCK))
+                h2 { "Encrypted in your browser" }
+                p { "Your lists are encrypted in this browser with your password before they're sent." }
+            }
+            li {
+                (icon(ICON_SERVER))
+                h2 { "Only ciphertext on the server" }
+                p {
+                    "Velio's servers can't read a playlist address, a server, a username or a password."
+                }
+            }
+            li {
+                (icon(ICON_PHONE))
+                h2 { "Sign in a TV with your phone" }
+                p { "Scan the QR code the TV shows, choose its profiles, and it loads your lists." }
             }
         }
     }

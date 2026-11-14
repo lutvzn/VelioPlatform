@@ -28,7 +28,7 @@ pub(crate) fn turnstile(site_key: Option<&str>) -> Markup {
 /// A form's problem, as a page, for a form sent without HTMX.
 pub fn problem_page(message: &str) -> Markup {
     html! {
-        section {
+        section .auth {
             h1 { "That didn't work" }
             p .problem { (message) }
         }
@@ -37,7 +37,7 @@ pub fn problem_page(message: &str) -> Markup {
 
 pub fn signup_form(site_key: Option<&str>) -> Markup {
     html! {
-        section {
+        section .auth {
             h1 { "Make an account" }
             form hx-post="/signup" hx-target="#main" hx-confirm="velio" data-velio="signup" {
                 label {
@@ -75,7 +75,7 @@ pub fn signup_form(site_key: Option<&str>) -> Markup {
 
 pub fn check_email(email: &str) -> Markup {
     html! {
-        section {
+        section .auth {
             h1 { "Check your email" }
             p { "We sent a link to " strong { (email) } ". Open it to finish. It works for 24 hours." }
         }
@@ -84,7 +84,7 @@ pub fn check_email(email: &str) -> Markup {
 
 pub fn signin_form(email: Option<&str>, note: Option<&str>, next: Option<&str>) -> Markup {
     html! {
-        section {
+        section .auth {
             h1 { "Sign in" }
             @if let Some(note) = note { p .note { (note) } }
             form hx-post="/signin" hx-target="#main" hx-confirm="velio" data-velio="signin" {
@@ -114,7 +114,7 @@ pub fn signin_form(email: Option<&str>, note: Option<&str>, next: Option<&str>) 
 pub fn confirm_page(token: &str) -> Markup {
     let action = format!("/confirm/{token}");
     html! {
-        section {
+        section .auth {
             h1 { "Confirm your email" }
             form method="post" action=(action) hx-post=(action) hx-target="#main" {
                 button type="submit" { "Confirm" }
@@ -125,7 +125,7 @@ pub fn confirm_page(token: &str) -> Markup {
 
 pub fn link_problem() -> Markup {
     html! {
-        section {
+        section .auth {
             h1 { "This link doesn't work" }
             p {
                 "It was already used, or it's too old. " a href="/signin" { "Sign in" } ", or ask for a new one: "
@@ -140,7 +140,7 @@ pub fn link_problem() -> Markup {
 
 pub fn reset_request_form(site_key: Option<&str>) -> Markup {
     html! {
-        section {
+        section .auth {
             h1 { "Reset your account" }
             p {
                 "Velio can't read your lists, so it can't give them back without your password. A reset keeps your \
@@ -161,7 +161,7 @@ pub fn reset_request_form(site_key: Option<&str>) -> Markup {
 
 pub fn reset_sent(email: &str) -> Markup {
     html! {
-        section {
+        section .auth {
             h1 { "Check your email" }
             p { "If " strong { (email) } " has an account, we sent it a reset link. It works for 1 hour." }
         }
@@ -194,7 +194,7 @@ fn current_password(email: &str, label: &str) -> Markup {
 /// The reset link's page: with the recovery key, a new password that keeps everything; without it, a reset.
 pub fn reset_form(token: &str, recovery: bool) -> Markup {
     html! {
-        section {
+        section .auth {
             h1 { "Choose a new password" }
             @if recovery {
                 h2 { "With your recovery key" }

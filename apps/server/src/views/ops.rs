@@ -108,18 +108,20 @@ pub fn ops_app() -> Markup {
                         }
                         button type="button" #notice-refresh { "Refresh" }
                     }
-                    table {
-                        thead {
-                            tr {
-                                th { "Reference" }
-                                th { "Received" }
-                                th { "Kind" }
-                                th { "From" }
-                                th { "Account named" }
-                                th { "Status" }
+                    div .table-wrap {
+                        table {
+                            thead {
+                                tr {
+                                    th { "Reference" }
+                                    th { "Received" }
+                                    th { "Kind" }
+                                    th { "From" }
+                                    th { "Account named" }
+                                    th { "Status" }
+                                }
                             }
+                            tbody #notice-rows {}
                         }
-                        tbody #notice-rows {}
                     }
                     p #notice-empty .note hidden { "No notices." }
                     article #notice .card hidden {}
@@ -143,17 +145,19 @@ pub fn ops_app() -> Markup {
                         button type="submit" { "Look up" }
                     }
                     p .note { "Typing narrows the list; Look up opens the account with that email or id." }
-                    table {
-                        thead {
-                            tr {
-                                th { "Email" }
-                                th { "Made" }
-                                th { "State" }
-                                th { "TVs" }
-                                th { "Notices" }
+                    div .table-wrap {
+                        table {
+                            thead {
+                                tr {
+                                    th { "Email" }
+                                    th { "Made" }
+                                    th { "State" }
+                                    th { "TVs" }
+                                    th { "Notices" }
+                                }
                             }
+                            tbody #account-rows {}
                         }
-                        tbody #account-rows {}
                     }
                     p #account-count .note {}
                     article #account .card hidden {}

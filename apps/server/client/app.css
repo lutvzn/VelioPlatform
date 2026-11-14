@@ -1,33 +1,60 @@
 /* Velio's pages. Plain CSS, no inline styles (the CSP has style-src 'self'). */
 
 :root {
-  --bg: #f7f7f5;
+  --bg: #f6f7f9;
   --surface: #ffffff;
-  --text: #1c1c1e;
-  --muted: #5f6368;
-  --line: #d9d9d6;
-  --accent: #3355dd;
+  --surface-2: #f0f2f5;
+  --text: #14161a;
+  --muted: #5d6470;
+  --line: #e3e6eb;
+  --line-strong: #cdd2da;
+  --accent: #4352e8;
+  --accent-hover: #3442d0;
   --accent-text: #ffffff;
-  --problem: #b3261e;
-  --done: #1e6b34;
-  --done-bg: #e3f3e6;
-  --warning-bg: #fff4d6;
+  --accent-soft: rgb(67 82 232 / 0.1);
+  --ring: rgb(67 82 232 / 0.28);
+  --problem: #c0271d;
+  --problem-text: #ffffff;
+  --problem-soft: #fdecea;
+  --done: #17734a;
+  --done-soft: #e5f5ec;
+  --warning: #7a5200;
+  --warning-soft: #fff4d4;
+  --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.05);
+  --shadow: 0 1px 2px rgb(16 24 40 / 0.04), 0 4px 16px rgb(16 24 40 / 0.05);
+  --radius: 14px;
+  --radius-sm: 10px;
+  --page: 760px;
+  --header-bg: rgb(246 247 249 / 0.8);
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%235d6470' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #121214;
-    --surface: #1c1c20;
-    --text: #ececee;
-    --muted: #a0a0a8;
-    --line: #34343a;
-    --accent: #7d95ff;
-    --accent-text: #0d0d12;
+    --bg: #0e0f12;
+    --surface: #17191e;
+    --surface-2: #20232a;
+    --text: #eceef2;
+    --muted: #9aa1ad;
+    --line: #262930;
+    --line-strong: #363a44;
+    --accent: #8a96ff;
+    --accent-hover: #a2acff;
+    --accent-text: #0b0d1a;
+    --accent-soft: rgb(138 150 255 / 0.14);
+    --ring: rgb(138 150 255 / 0.35);
     --problem: #ff8a80;
-    --done: #8fdc9f;
-    --done-bg: #14301b;
-    --warning-bg: #3a3014;
+    --problem-text: #1f0605;
+    --problem-soft: #33171a;
+    --done: #6fdc9c;
+    --done-soft: #12291d;
+    --warning: #f2c450;
+    --warning-soft: #2c2410;
+    --shadow-sm: none;
+    --shadow: none;
+    --header-bg: rgb(14 15 18 / 0.78);
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%239aa1ad' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
   }
 }
 
@@ -40,104 +67,332 @@
   display: none !important;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font:
-    16px/1.5 system-ui,
+    16px/1.55 system-ui,
     -apple-system,
     "Segoe UI",
     Roboto,
+    "Helvetica Neue",
     sans-serif;
+  -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
 
 a {
   color: var(--accent);
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
 }
 
-header,
-footer {
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--ring);
+}
+
+/* --- Header and navigation --- */
+
+body > header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  isolation: isolate;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 16px;
-  padding: 12px 16px;
-  max-width: 720px;
-  width: 100%;
-  margin: 0 auto;
+  min-height: 60px;
+  padding: 10px max(16px, calc((100% - var(--page)) / 2 + 16px));
+  border-bottom: 1px solid var(--line);
 }
 
-header {
-  justify-content: space-between;
+/* The blur is on a layer of its own: on the header it would make the
+   phone's tab bar, which is inside it, fixed to the header. */
+body > header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--header-bg);
+  backdrop-filter: saturate(1.6) blur(14px);
+  -webkit-backdrop-filter: saturate(1.6) blur(14px);
 }
 
 .brand {
-  font-weight: 700;
-  font-size: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 750;
+  font-size: 1.1875rem;
+  letter-spacing: -0.02em;
   text-decoration: none;
   color: var(--text);
+}
+
+/* The mark: a screen with a play triangle, in the accent. */
+.brand::before {
+  content: "";
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6 4.2v7.6a.6.6 0 0 0 .9.5l6-3.8a.6.6 0 0 0 0-1l-6-3.8a.6.6 0 0 0-.9.5Z' fill='white'/%3E%3C/svg%3E")
+      center / 16px no-repeat,
+    linear-gradient(135deg, #6a77ff, #3d49d6);
+  box-shadow:
+    inset 0 0 0 1px rgb(0 0 0 / 0.08),
+    var(--shadow-sm);
+}
+
+.brand:hover {
+  text-decoration: none;
 }
 
 nav {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 4px;
 }
 
 nav form {
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  max-width: none;
   margin: 0;
 }
 
-footer {
-  margin-top: auto;
+nav a,
+nav button.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
   color: var(--muted);
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
+  font-weight: 550;
+  text-decoration: none;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
 }
 
-footer a {
-  color: var(--muted);
+nav a:hover,
+nav button.link:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  text-decoration: none;
 }
+
+nav a[aria-current="page"] {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+nav .icon {
+  display: none;
+}
+
+nav form::before {
+  content: "";
+  display: inline-block;
+  width: 1px;
+  height: 20px;
+  margin: 0 6px 0 4px;
+  vertical-align: middle;
+  background: var(--line-strong);
+}
+
+/* Signed out: "Make an account" is the one to press. */
+#nav:not([data-account-id]) a[href="/signup"] {
+  color: var(--accent-text);
+  background: var(--accent);
+}
+
+#nav:not([data-account-id]) a[href="/signup"]:hover {
+  background: var(--accent-hover);
+}
+
+.icon {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* --- Page --- */
 
 main {
-  max-width: 720px;
+  max-width: var(--page);
   width: 100%;
   margin: 0 auto;
-  padding: 8px 16px 48px;
+  padding: 24px 16px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* A page's parts come in gently after a swap. */
+@media (prefers-reduced-motion: no-preference) {
+  main > * {
+    animation: enter 0.22s ease-out both;
+  }
+}
+
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+main > * {
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 h1 {
-  font-size: 1.75rem;
-  line-height: 1.2;
-  margin: 16px 0;
+  font-size: 2rem;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  font-weight: 750;
+  margin: 4px 0 12px;
 }
+
+h2 {
+  font-size: 1.125rem;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  font-weight: 650;
+  margin: 20px 0 8px;
+}
+
+p {
+  margin: 0 0 12px;
+}
+
+section > :last-child,
+article > :last-child,
+details > :last-child {
+  margin-bottom: 0;
+}
+
+/* Sections with a heading of their own, such as the account page's, are cards. */
+main > section:has(> h2):not(:has(> h1)),
+main > section[data-locked],
+main > section[data-needs-keys],
+[data-sealed-device],
+.mail {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px;
+}
+
+main > section:has(> h2):not(:has(> h1)) > h2:first-child,
+[data-sealed-device] > h2:first-child,
+.mail > h2:first-child {
+  margin-top: 0;
+}
+
+/* Signing in, making an account, resetting: one card in the middle. */
+section.auth {
+  width: 100%;
+  max-width: 440px;
+  margin: 16px auto 0;
+  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+
+section.auth h1 {
+  font-size: 1.625rem;
+  margin-top: 0;
+}
+
+section.auth form {
+  max-width: none;
+}
+
+section.auth button[type="submit"] {
+  align-self: stretch;
+}
+
+section.auth > p:last-child {
+  margin-top: 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+
+/* --- Forms --- */
 
 form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  max-width: 420px;
+  gap: 16px;
+  max-width: 480px;
   margin: 16px 0;
+}
+
+section > form:first-child,
+details > form:first-of-type {
+  margin-top: 0;
 }
 
 label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 
 label.check {
   flex-direction: row;
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
+  font-size: 0.9375rem;
   font-weight: 400;
+  cursor: pointer;
 }
 
-label.check input {
-  margin-top: 4px;
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  flex: none;
+  cursor: pointer;
 }
 
 input[type="email"],
@@ -147,106 +402,70 @@ input[type="url"],
 select,
 textarea {
   font: inherit;
+  font-size: 1rem;
   font-weight: 400;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  min-height: 46px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
   width: 100%;
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
-input:focus-visible,
-button:focus-visible,
-a:focus-visible {
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--muted);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--ring);
+}
+
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: none;
 }
 
-button {
-  font: inherit;
-  font-weight: 600;
-  padding: 10px 16px;
-  border: none;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-text);
-  cursor: pointer;
-  align-self: flex-start;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: progress;
-}
-
-button.link {
-  background: none;
-  color: var(--accent);
-  padding: 0;
-  font-weight: 400;
-  text-decoration: underline;
-}
-
-form[aria-busy] button[type="submit"]::after {
-  content: " …";
-}
-
-.note {
+::placeholder {
   color: var(--muted);
-  font-size: 0.9375rem;
-  margin: 0;
-}
-
-.problem {
-  color: var(--problem);
-  margin: 0;
-}
-
-.problem:empty {
-  display: none;
-}
-
-.done {
-  color: var(--done);
-  background: var(--done-bg);
-  padding: 0.6rem 0.8rem;
-  border-radius: 6px;
-}
-
-.warning {
-  background: var(--warning-bg);
-  padding: 10px 12px;
-  border-radius: 8px;
-}
-
-.prose li {
-  margin-bottom: 8px;
-}
-
-.mail {
-  border-top: 1px solid var(--line);
-  padding-top: 8px;
-}
-
-.mail pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  background: var(--surface);
-  padding: 12px;
-  border-radius: 8px;
-}
-
-.cf-turnstile {
-  min-height: 65px;
+  opacity: 0.7;
 }
 
 select {
-  appearance: auto;
+  appearance: none;
+  padding-right: 40px;
+  background: var(--chevron) right 12px center / 16px no-repeat var(--surface);
+  cursor: pointer;
 }
 
 textarea {
   resize: vertical;
+}
+
+/* Codes: the TV's, and a recovery key. */
+input[data-field="code"],
+input[data-recovery-key] {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 1.125rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+input[data-field="code"]::placeholder,
+input[data-recovery-key]::placeholder {
+  text-transform: none;
 }
 
 fieldset {
@@ -255,70 +474,383 @@ fieldset {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 legend {
+  font-size: 0.875rem;
   font-weight: 600;
   padding: 0;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+/* Choosing profiles: each one a row to tap. */
+fieldset label.check {
+  align-items: center;
+  min-height: 48px;
+  padding: 8px 14px;
+  margin-top: -8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-weight: 500;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s;
+}
+
+fieldset legend + label.check {
+  margin-top: 0;
+}
+
+fieldset label.check:hover {
+  border-color: var(--muted);
+}
+
+fieldset label.check:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+fieldset label.check input {
+  margin: 0;
+}
+
+.cf-turnstile {
+  min-height: 65px;
+}
+
+/* --- Buttons --- */
+
+button,
+a.button {
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 20px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-text);
+  text-decoration: none;
+  cursor: pointer;
+  align-self: flex-start;
+  box-shadow:
+    var(--shadow-sm),
+    inset 0 1px 0 rgb(255 255 255 / 0.12);
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    transform 0.08s;
+}
+
+button:hover,
+a.button:hover {
+  background: var(--accent-hover);
+  text-decoration: none;
+}
+
+button:active,
+a.button:active {
+  transform: translateY(1px);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+  transform: none;
+}
+
+/* Buttons that do something here, rather than send: quieter. */
+button[type="button"]:not(.link),
+a.button.secondary {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+button[type="button"]:not(.link):hover,
+a.button.secondary:hover {
+  background: var(--surface-2);
 }
 
 button.danger {
   background: var(--problem);
+  color: var(--problem-text);
 }
 
-a.button {
-  display: inline-block;
-  font-weight: 600;
-  padding: 10px 16px;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-text);
+button.danger:hover {
+  background: color-mix(in srgb, var(--problem) 88%, var(--text));
+}
+
+button.link {
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+button.link:hover {
+  background: none;
+}
+
+nav button.link {
   text-decoration: none;
 }
+
+/* Sending: a spinner on the button. */
+form[aria-busy] button[type="submit"]::after {
+  content: "";
+  width: 1em;
+  height: 1em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- Messages --- */
+
+.note {
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+
+p.note,
+form .note {
+  margin-bottom: 0;
+}
+
+main > p.note,
+[data-needs-keys] > p.note {
+  margin-bottom: 4px;
+}
+
+.problem,
+.done,
+.warning {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 0.9375rem;
+}
+
+.problem {
+  color: var(--problem);
+  background: var(--problem-soft);
+  border: 1px solid color-mix(in srgb, var(--problem) 22%, transparent);
+}
+
+.problem:empty {
+  display: none;
+}
+
+.done {
+  color: var(--done);
+  background: var(--done-soft);
+  border: 1px solid color-mix(in srgb, var(--done) 22%, transparent);
+}
+
+.warning {
+  color: var(--warning);
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 22%, transparent);
+}
+
+.done strong,
+.warning strong {
+  color: inherit;
+}
+
+/* --- Rows: lists, profiles, TVs --- */
 
 .rows {
   list-style: none;
   padding: 0;
-  margin: 16px 0;
-  border-top: 1px solid var(--line);
+  margin: 8px 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.rows:empty {
+  display: none;
 }
 
 .rows > li {
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
+  position: relative;
+  padding: 14px 16px;
+}
+
+.rows > li + li {
+  border-top: 1px solid var(--line);
 }
 
 .rows .note {
   margin-top: 2px;
+  font-size: 0.875rem;
 }
 
 .row-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 4px 12px;
 }
 
-details summary {
+.row-head strong {
+  font-weight: 600;
+}
+
+/* A row that opens a page: the whole row is the link. */
+.rows > li:has(> .row-head > a) {
+  padding-right: 44px;
+  transition: background-color 0.15s;
+}
+
+.rows > li:has(> .row-head > a):hover {
+  background: var(--surface-2);
+}
+
+.row-head > a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.row-head > a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.rows > li:has(> .row-head > a)::after {
+  content: "";
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-top: 2px solid var(--muted);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+/* --- Disclosures --- */
+
+details > summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   cursor: pointer;
   color: var(--accent);
-  margin-top: 4px;
+  font-weight: 550;
+  border-radius: 6px;
+  user-select: none;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+details > summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.15s;
+}
+
+details[open] > summary::after {
+  margin-top: 2px;
+  transform: rotate(-135deg);
+}
+
+details[open] > summary {
+  margin-bottom: 12px;
 }
 
 details form {
   margin: 12px 0;
 }
 
-/* Profile pictures: vault.js sets the colour from sync-core's PROFILE_COLORS, through the CSSOM. */
+/* In a row, "Change" is a small button, and opens a panel. */
+.rows details {
+  margin-top: 10px;
+}
+
+.rows details > summary {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 0.875rem;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.rows details > summary:hover {
+  background: var(--surface-2);
+}
+
+.rows details[open] {
+  padding: 14px;
+  margin-inline: -4px;
+  background: var(--surface-2);
+  border-radius: 12px;
+}
+
+.rows details[open] > summary {
+  background: var(--surface);
+}
+
+.rows details form + form {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line-strong);
+}
+
+.rows details button.danger {
+  background: var(--problem-soft);
+  color: var(--problem);
+  border-color: color-mix(in srgb, var(--problem) 30%, transparent);
+  box-shadow: none;
+}
+
+.rows details button.danger:hover {
+  background: color-mix(in srgb, var(--problem) 16%, var(--surface));
+}
+
+/* --- Profile pictures: vault.js sets the colour from sync-core's PROFILE_COLORS, through the CSSOM. --- */
+
 .pic {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   background: var(--line);
   color: #ffffff;
@@ -327,10 +859,16 @@ details form {
   align-self: center;
 }
 
+fieldset .pic {
+  width: 28px;
+  height: 28px;
+  font-size: 0.8125rem;
+}
+
 .swatches {
   flex-direction: row;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 
 .swatches legend {
@@ -354,11 +892,16 @@ label.swatch input {
 
 label.swatch [data-swatch] {
   display: block;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   border: 3px solid transparent;
   box-shadow: inset 0 0 0 2px var(--surface);
+  transition: transform 0.1s;
+}
+
+label.swatch:hover [data-swatch] {
+  transform: scale(1.08);
 }
 
 label.swatch input:checked + [data-swatch] {
@@ -379,17 +922,259 @@ label.swatch input:focus-visible + [data-swatch] {
   white-space: nowrap;
 }
 
-/* A recovery key just made: shown once, and printed alone. */
-.recovery-shown {
-  background: var(--warning-bg);
-  padding: 4px 16px;
-  border-radius: 8px;
+/* --- The home page --- */
+
+.hero {
+  padding: 32px 0 8px;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.hero h1 {
+  font-size: clamp(2.25rem, 7vw, 3.25rem);
+  letter-spacing: -0.035em;
+  margin: 16px 0;
+}
+
+.lead {
+  font-size: 1.1875rem;
+  color: var(--muted);
+  max-width: 600px;
+}
+
+.cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.features {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.features > li {
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.features h2 {
+  margin: 14px 0 6px;
+  font-size: 1rem;
+}
+
+.features p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+
+.features .icon {
+  width: 40px;
+  height: 40px;
+  padding: 9px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* --- Reading pages --- */
+
+.prose {
+  max-width: 660px;
+}
+
+.prose li {
+  margin-bottom: 8px;
+}
+
+.prose li::marker {
+  color: var(--muted);
+}
+
+.prose h2 {
+  margin-top: 28px;
+}
+
+/* --- The development outbox --- */
+
+.mail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+}
+
+/* --- A recovery key just made: shown once, and printed alone. --- */
+
+main > section.recovery-shown {
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
 }
 
 .recovery-key {
-  font-size: 1.25rem;
-  letter-spacing: 0.04em;
+  display: block;
+  padding: 16px;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 1.375rem;
+  letter-spacing: 0.06em;
+  text-align: center;
   overflow-wrap: anywhere;
+  background: var(--surface);
+  border: 2px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
+/* --- Footer --- */
+
+body > footer {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 24px;
+  padding: 24px 16px 32px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+body > footer a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+body > footer a:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* --- Phones: the signed-in pages' tabs move to the bottom, in reach of a thumb. --- */
+
+@media (max-width: 640px) {
+  h1 {
+    font-size: 1.75rem;
+  }
+
+  main > section:has(> h2):not(:has(> h1)),
+  main > section[data-locked],
+  main > section[data-needs-keys],
+  [data-sealed-device] {
+    padding: 16px;
+  }
+
+  section.auth {
+    margin-top: 0;
+    padding: 22px 18px;
+  }
+
+  #nav[data-account-id] {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 10;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    isolation: isolate;
+  }
+
+  #nav[data-account-id]::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: var(--header-bg);
+    backdrop-filter: saturate(1.6) blur(14px);
+    -webkit-backdrop-filter: saturate(1.6) blur(14px);
+  }
+
+  #nav[data-account-id] a {
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    min-height: 54px;
+    padding: 4px 0;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  #nav[data-account-id] a:hover {
+    background: none;
+  }
+
+  #nav[data-account-id] a[aria-current="page"] {
+    color: var(--accent);
+    background: none;
+  }
+
+  #nav[data-account-id] .icon {
+    display: block;
+    width: 56px;
+    height: 30px;
+    padding: 4px 17px;
+    border-radius: 999px;
+    transition: background-color 0.15s;
+  }
+
+  #nav[data-account-id] a[aria-current="page"] .icon {
+    background: var(--accent-soft);
+  }
+
+  /* Signing out stays at the top, out of the thumb's way. */
+  #nav[data-account-id] form {
+    position: fixed;
+    top: 12px;
+    right: 16px;
+  }
+
+  #nav[data-account-id] form::before {
+    display: none;
+  }
+
+  body:has(#nav[data-account-id]) main {
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+
+  body:has(#nav[data-account-id]) > footer {
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+
+  #nav:not([data-account-id]) a {
+    padding: 0 10px;
+  }
+
+  .cta > * {
+    flex: 1 1 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
 }
 
 @media print {
@@ -399,5 +1184,11 @@ label.swatch input:focus-visible + [data-swatch] {
   main > :not(section),
   .recovery-shown button {
     display: none !important;
+  }
+
+  main > section.recovery-shown {
+    border: none;
+    box-shadow: none;
+    background: none;
   }
 }
