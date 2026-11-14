@@ -24,10 +24,13 @@ import {
   type Signed,
 } from "./crypto.ts";
 import type { OwnerKeys } from "./owner.ts";
-import { array, count, id, ReadProblem, record, text } from "./read.ts";
+import { array, count, id, ReadProblem, record, sealed as readSealed, text } from "./read.ts";
 import {
+  addonManifestUrl,
   defaultListName,
   emptyManifest,
+  DEFAULT_DEVICE_LIMIT,
+  MAX_DEVICE_NAME_LENGTH,
   MAX_DEVICES,
   MAX_GUIDE_URLS,
   MAX_LISTS,
@@ -114,21 +117,11 @@ const refused = (message: string) => new ChangeProblem("refused", message);
 
 // --- Reading changes and stored state ---
 
-/** Base64 of 24 bytes. */
-const NONCE_LENGTH = 32;
 /** A wrapped 32-byte key: 4-byte length + key + 16-byte tag, in base64. */
 const WRAPPED_KEY_LENGTH = 72;
 /** A profile record pads to 1 KB; a list to at most about 31 KB (10 long guide URLs). */
 const MAX_PROFILE_BOX = 4096;
 const MAX_LIST_BOX = 48_000;
-
-const readSealed = (value: unknown, what: string, maxBox: number): Sealed => {
-  const item = record(value, what);
-  const nonce = text(item.nonce, `${what}'s nonce`, NONCE_LENGTH);
-  const box = text(item.box, `${what}'s box`, maxBox);
-  if (nonce.length !== NONCE_LENGTH) throw new ReadProblem(`${what}'s nonce is the wrong size`);
-  return { nonce, box };
-};
 
 const readWrappedKey = (value: unknown, what: string) => {
   const sealed = readSealed(value, what, WRAPPED_KEY_LENGTH);
@@ -334,9 +327,13 @@ const checkRekeyed = (before: Manifest, after: Manifest, change: Change) => {
 export interface ChangeOptions {
   /** TVs this change may add: the one being signed in, as the server knows from its pairing. */
   newDevices?: readonly string[];
+  /** The account's TV limit (DEFAULT_DEVICE_LIMIT unless the operator gave it more), at most MAX_DEVICES. */
+  deviceLimit?: number;
 }
 
 // --- The server's side ---
+
+const tvs = (limit: number) => `${limit} ${limit === 1 ? "TV" : "TVs"}`;
 
 /**
  * Checks a change against what the server holds, and returns what it will
@@ -357,7 +354,8 @@ export const applyChange = (
   } catch (error) {
     throw refused(error instanceof Error ? error.message : "The change isn't readable");
   }
-  const currentRev = storedManifest(stored, account).rev;
+  const before = storedManifest(stored, account);
+  const currentRev = before.rev;
   if (change.baseRev !== currentRev)
     throw new ChangeProblem(
       "behind",
@@ -372,7 +370,10 @@ export const applyChange = (
   }
   if (manifest.account !== account) throw refused("The manifest is for another account");
   if (manifest.rev !== currentRev + 1) throw refused("The manifest's revision must go up by one");
-  if (manifest.devices.length > MAX_DEVICES) throw new ChangeProblem("limit", `At most ${MAX_DEVICES} TVs`);
+  // Only a change that adds TVs is held to the limit, so an account the operator gave fewer TVs than it has still works.
+  const deviceLimit = Math.min(options.deviceLimit ?? DEFAULT_DEVICE_LIMIT, MAX_DEVICES);
+  if (manifest.devices.length > deviceLimit && manifest.devices.length > before.devices.length)
+    throw new ChangeProblem("limit", `At most ${tvs(deviceLimit)}`);
   if (manifest.profiles.length > MAX_PROFILES)
     throw new ChangeProblem("limit", `At most ${MAX_PROFILES} profiles`);
   if (manifest.lists.length > MAX_LISTS) throw new ChangeProblem("limit", `At most ${MAX_LISTS} lists`);
@@ -413,7 +414,7 @@ export const applyChange = (
       throw refused(`TV ${device.id} can only be added by signing it in`);
     devices.set(device.id, device);
   }
-  checkRekeyed(storedManifest(stored, account), manifest, change);
+  checkRekeyed(before, manifest, change);
   // A deleted profile's copies of list keys go with it; a TV keeps only the keys of the profiles it has.
   const given = new Map(manifest.devices.map(device => [device.id, new Set(device.profiles)]));
   const next: StoredState = {
@@ -453,7 +454,22 @@ export interface OpenedDevice {
   profiles: string[];
   /** Its box public key, to box its profile keys to: from the signed manifest, or from signing it in. */
   publicKey?: Uint8Array;
+  /** As the TV named itself when it was signed in. TVs signed in before names were sealed have none. */
+  name?: string;
 }
+
+/**
+ * A TV's name, sealed under the account key for the manifest. Sealed again
+ * on every change, with a new nonce, so the server can't tell when it changed.
+ */
+const sealDeviceName = (owner: OwnerKeys, name: string) =>
+  sealJson(owner.accountKey, { format: 1, name }, 256);
+
+const openDeviceName = (owner: OwnerKeys, deviceId: string, name: Sealed) => {
+  const item = record(openJson(owner.accountKey, name), `TV ${deviceId}'s name`);
+  if (item.format !== 1) throw new ReadProblem(`TV ${deviceId}'s name has an unknown format`);
+  return text(item.name, `TV ${deviceId}'s name`, MAX_DEVICE_NAME_LENGTH);
+};
 
 export interface OpenedState {
   manifest: Manifest;
@@ -519,6 +535,7 @@ export const openState = (owner: OwnerKeys, account: string, stored: StoredState
   const devices = manifest.devices.map((entry): OpenedDevice => {
     const device: OpenedDevice = { id: entry.id, profiles: [...entry.profiles] };
     if (entry.publicKey !== undefined) device.publicKey = fromBase64(entry.publicKey);
+    if (entry.name !== undefined) device.name = openDeviceName(owner, entry.id, entry.name);
     return device;
   });
   return { manifest, profiles, lists, devices };
@@ -531,10 +548,17 @@ const cleanDraft = (draft: ListDraft): ListDraft => {
     kind: draft.kind,
     refreshHours: draft.refreshHours,
   };
-  const fields = draft.kind === "m3u" ? (["url"] as const) : (["server", "username", "password"] as const);
+  const fields = draft.kind === "xtream" ? (["server", "username", "password"] as const) : (["url"] as const);
   for (const field of fields) {
     const value = draft[field]?.trim();
     if (value) clean[field] = value;
+  }
+  // An add-on is kept by its manifest's address, which is what TVs ask for.
+  if (draft.kind === "stremio" && clean.url) clean.url = addonManifestUrl(clean.url) ?? clean.url;
+  // An add-on has no guide, and nothing to refresh on a timer.
+  if (draft.kind === "stremio") {
+    if (draft.disabled) clean.disabled = true;
+    return clean;
   }
   const guideUrls = (draft.guideUrls ?? []).map(url => url.trim()).filter(Boolean);
   if (guideUrls.length > 0) clean.guideUrls = guideUrls.slice(0, MAX_GUIDE_URLS);
@@ -657,22 +681,30 @@ export const withoutProfile = (state: OpenedState, profileId: string): OpenedSta
 
 /**
  * Signs in a TV: gives it the chosen profiles. buildChange() boxes their
- * keys to the TV's public key, which came sealed under the pairing secret.
+ * keys to the TV's public key, and seals its name under the account key;
+ * both came sealed under the pairing secret.
  */
 export const withDevice = (
   state: OpenedState,
   deviceId: string,
   publicKey: Uint8Array,
   profileIds: readonly string[],
+  name: string,
+  limit: number = DEFAULT_DEVICE_LIMIT,
 ): OpenedState => {
   if (state.devices.some(device => device.id === deviceId))
     throw refused(`TV ${deviceId} is already signed in`);
-  if (state.devices.length >= MAX_DEVICES)
-    throw new ChangeProblem("limit", `An account can have at most ${MAX_DEVICES} TVs.`);
+  const deviceLimit = Math.min(limit, MAX_DEVICES);
+  if (state.devices.length >= deviceLimit)
+    throw new ChangeProblem("limit", `This account can have at most ${tvs(deviceLimit)}.`);
   const known = new Set(state.profiles.map(profile => profile.record.id));
   const profiles = [...new Set(profileIds)].filter(profileId => known.has(profileId));
   if (profiles.length === 0) throw new ChangeProblem("refused", "Choose at least one profile for this TV.");
-  return { ...state, devices: [...state.devices, { id: deviceId, profiles, publicKey }] };
+  const device: OpenedDevice = { id: deviceId, profiles, publicKey };
+  const trimmed = name.trim();
+  if (trimmed.length > MAX_DEVICE_NAME_LENGTH) throw refused("The TV's name is too long");
+  if (trimmed !== "") device.name = trimmed;
+  return { ...state, devices: [...state.devices, device] };
 };
 
 /**
@@ -785,6 +817,7 @@ export const buildChange = (owner: OwnerKeys, before: OpenedState, after: Opened
     devices: after.devices.map(device => {
       const entry: Manifest["devices"][number] = { id: device.id, profiles: device.profiles };
       if (device.publicKey) entry.publicKey = toBase64(device.publicKey);
+      if (device.name !== undefined) entry.name = sealDeviceName(owner, device.name);
       return entry;
     }),
   };

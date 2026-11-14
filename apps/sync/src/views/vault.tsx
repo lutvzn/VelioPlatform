@@ -99,6 +99,9 @@ export const VaultPage = (props: VaultPageProps & { title: string; children: Chi
 export const Name = ({ kind, id }: { kind: "profile" | "list"; id: string }) =>
   kind === "profile" ? <span data-profile-name={id}>…</span> : <span data-list-name={id}>…</span>;
 
+/** A TV's name, which only the owner can open: vault.js fills it in from the manifest. */
+export const TvName = ({ id }: { id: string }) => <span data-tv-name={id}>…</span>;
+
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
 // --- Profiles ---
@@ -236,8 +239,8 @@ export const ListsPage = (props: VaultPageProps) => {
   return (
     <VaultPage {...props} title="Lists">
       <p class="note">
-        The M3U playlists and Xtream logins of your own subscriptions. Give each list to the profiles that
-        should have it.
+        The M3U playlists and Xtream logins of your own subscriptions, and the Stremio add-ons whose films and
+        series your TVs show. Give each list to the profiles that should have it.
       </p>
       {manifest.lists.length === 0 ? <p>No lists yet.</p> : null}
       <ul class="rows">
@@ -360,10 +363,23 @@ export const ListPage = (props: VaultPageProps & { listId?: string }) => {
           <select data-field="kind">
             <option value="m3u">M3U playlist</option>
             <option value="xtream">Xtream login</option>
+            <option value="stremio">Stremio add-on</option>
           </select>
         </label>
         <fieldset data-kind-only="m3u">
           <TextField field="url" label="Playlist address" type="url" placeholder="https://…" />
+        </fieldset>
+        <fieldset data-kind-only="stremio" hidden>
+          <TextField
+            field="addonUrl"
+            label="Add-on address"
+            type="url"
+            placeholder="https://…/manifest.json or stremio://…"
+          />
+          <p class="note">
+            Its catalogs show in Movies and Series on the TV, and its streams and subtitles on a title's page.
+            Only streams with a web address play; torrents don't.
+          </p>
         </fieldset>
         <fieldset data-kind-only="xtream" hidden>
           <TextField field="server" label="Server" placeholder="https://…" />
@@ -379,16 +395,18 @@ export const ListPage = (props: VaultPageProps & { listId?: string }) => {
           maxlength={MAX_NAME_LENGTH}
           placeholder="The server's name"
         />
-        <label>
-          Guide addresses (optional)
-          <textarea
-            data-field="guideUrls"
-            rows={2}
-            spellcheck={false}
-            placeholder="XMLTV addresses, one per line"
-          ></textarea>
-        </label>
-        <RefreshChoice />
+        <fieldset data-kind-not="stremio">
+          <label>
+            Guide addresses (optional)
+            <textarea
+              data-field="guideUrls"
+              rows={2}
+              spellcheck={false}
+              placeholder="XMLTV addresses, one per line"
+            ></textarea>
+          </label>
+          <RefreshChoice />
+        </fieldset>
         <fieldset>
           <legend>Profiles that have it</legend>
           {manifest.profiles.length === 0 ? (
@@ -461,7 +479,9 @@ export const DevicesPage = (props: VaultPageProps) => {
           return (
             <li>
               <div class="row-head">
-                <strong data-device-row={device.id}>{device.name}</strong>
+                <strong data-device-row={device.id}>
+                  <TvName id={device.id} />
+                </strong>
                 <span class="note">{deviceStatus(device)}</span>
               </div>
               {entry ? (

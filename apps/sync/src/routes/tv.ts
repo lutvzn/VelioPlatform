@@ -12,7 +12,6 @@ import {
   isRecord,
   readEventsProtocols,
   isSealed,
-  MAX_DEVICE_NAME_LENGTH,
   newId,
   newPairingId,
   PAIRING_ID_PATTERN,
@@ -74,12 +73,12 @@ tv.post("/v1/pair", async c => {
     return problem(c, 429, "Too many tries. Wait a minute.");
   const body: unknown = await c.req.json().catch(() => null);
   if (!isRecord(body)) return problem(c, 400, "Send JSON.");
-  const { publicKey, name } = body;
+  // Old VelioTV builds also send the TV's name in plain text; it's ignored,
+  // as the name the owner keeps is the one sealed for the phone.
+  const { publicKey } = body;
   const sealed = readSealedDevice(body.sealed);
   const proofs = readProofs(body.proofs);
   if (typeof publicKey !== "string" || !BASE64_32.test(publicKey)) return problem(c, 400, "No public key.");
-  if (typeof name !== "string" || name.trim() === "" || name.length > MAX_DEVICE_NAME_LENGTH)
-    return problem(c, 400, `Name the TV, in at most ${MAX_DEVICE_NAME_LENGTH} characters.`);
   if (!sealed || !proofs) return problem(c, 400, "No sealed details or proofs.");
 
   const now = Date.now();
@@ -95,9 +94,9 @@ tv.post("/v1/pair", async c => {
     const results = await c.env.DB.batch([
       c.env.DB.prepare("DELETE FROM pairings WHERE id = ? AND expires_at <= ?").bind(id, now),
       c.env.DB.prepare(
-        `INSERT INTO pairings (id, poll_hash, proof_qr_hash, proof_code_hash, device_id, public_key, name,
+        `INSERT INTO pairings (id, poll_hash, proof_qr_hash, proof_code_hash, device_id, public_key,
            sealed_device, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
       ).bind(
         id,
         pollHash,
@@ -105,7 +104,6 @@ tv.post("/v1/pair", async c => {
         codeHash,
         newId(),
         publicKey,
-        name.trim(),
         JSON.stringify(sealed),
         now,
         now + PAIRING_MS,

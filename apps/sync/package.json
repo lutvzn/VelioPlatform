@@ -9,8 +9,9 @@
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "test-account": "node scripts/make-test-account.ts",
-    "tsc": "tsc && tsc -p src/client",
+    "tsc": "tsc && tsc -p src/client && tsc -p test/server",
     "test": "node scripts/build-client.mjs && vitest run",
+    "test:server": "node scripts/build-client.mjs && vitest run -c vitest.server.config.ts",
     "build": "node scripts/build-client.mjs"
   },
   "dependencies": {

@@ -37,7 +37,24 @@ interface Account {
   closed_reason: string | null;
   purged_at: number | null;
   devices: number | null;
+  /** What the operator gave it, or null for the default (the Rust server only). */
+  tv_limit?: number | null;
+  tv_limits?: { default: number; max: number; allowed: number };
   notices: { id: string; received_at: number; kind: string; status: string; action: string }[];
+}
+
+/** A row of GET /ops/accounts (the Rust server only). */
+interface AccountRow {
+  id: string;
+  email: string;
+  created_at: number;
+  confirmed_at: number | null;
+  closed_at: number | null;
+  purged_at: number | null;
+  tv_limit: number | null;
+  devices: number;
+  allowed: number;
+  notice_count: number;
 }
 
 type Answer<T> = { ok: true; json: T } | { ok: false; status: number; problem: string };
@@ -98,6 +115,8 @@ const listsNotices = (json: unknown): json is { notices: NoticeSummary[] } =>
   isObject(json) && Array.isArray(json.notices);
 const hasNotice = (json: unknown): json is { notice: Notice; account: Account | null } =>
   isObject(json) && isObject(json.notice) && (json.account === null || isObject(json.account));
+const listsAccounts = (json: unknown): json is { accounts: AccountRow[]; total: number } =>
+  isObject(json) && Array.isArray(json.accounts) && typeof json.total === "number";
 const hasAccount = (json: unknown): json is { account: Account } => isObject(json) && isObject(json.account);
 const hasDeleteAt = (json: unknown): json is { deleteAt: number } =>
   isObject(json) && typeof json.deleteAt === "number";
@@ -106,7 +125,7 @@ const isOk = (json: unknown): json is { ok: true } => isObject(json) && json.ok 
 const call = async <T>(
   path: string,
   expected: (json: unknown) => json is T,
-  body?: Record<string, string>,
+  body?: Record<string, string | number | null>,
 ): Promise<Answer<T>> => {
   try {
     const init: RequestInit = { credentials: "same-origin" };
@@ -154,7 +173,7 @@ let lookedUp: string | undefined;
 const showAgain = async () => {
   if (shownNotice) await showNotice(shownNotice);
   if (lookedUp) await showAccount(lookedUp);
-  await loadNotices();
+  await Promise.all([loadNotices(), loadAccounts()]);
 };
 
 // --- Tabs and signing out ---
@@ -165,6 +184,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-tab]"))
       other.setAttribute("aria-pressed", String(other === button));
     find("#notices").hidden = button.dataset.tab !== "notices";
     find("#accounts").hidden = button.dataset.tab !== "accounts";
+    if (button.dataset.tab === "accounts") void loadAccounts();
   });
 
 find("#signout").addEventListener("click", () => {
@@ -206,7 +226,7 @@ const accountCard = (account: Account, noticeId?: string) => {
       ["State", accountState(account)],
       ["Made", when(account.created_at)],
       ["Confirmed", when(account.confirmed_at)],
-      ["TVs", String(account.devices ?? 0)],
+      ["TVs", tvCount(account)],
       ...(account.closed_reason ? [["Reason closed", account.closed_reason] as [string, Content]] : []),
     ]),
     el("h3", {}, `Notices naming it (${account.notices.length})`),
@@ -223,8 +243,68 @@ const accountCard = (account: Account, noticeId?: string) => {
             ),
           ),
         ),
+    account.purged_at ? null : tvLimitForm(account),
     buttons.length ? el("div", { class: "actions" }, buttons) : null,
   );
+};
+
+// --- TV limits (POST /ops/accounts/:id/tv-limit) ---
+
+const tvCount = (account: Account) => {
+  const tvs = String(account.devices ?? 0);
+  const limits = account.tv_limits;
+  if (!limits) return tvs;
+  return `${tvs} of ${limits.allowed} allowed${account.tv_limit == null ? " (the default)" : ""}`;
+};
+
+const setTvLimit = async (account: Account, limit: number | null) => {
+  const answer = await call(`/accounts/${encodeURIComponent(account.id)}/tv-limit`, isOk, { limit });
+  if (!answer.ok) {
+    say(answer.problem, true);
+    return;
+  }
+  const tvs = account.devices ?? 0;
+  const allowed = limit ?? account.tv_limits?.default ?? 0;
+  say(
+    `${account.email} can now have ${allowed} TVs${limit === null ? " (the default)" : ""}.` +
+      (tvs > allowed
+        ? ` It has ${tvs}: they stay, and no more can be signed in until it's under ${allowed}.`
+        : ""),
+  );
+  await showAgain();
+};
+
+const tvLimitForm = (account: Account) => {
+  const limits = account.tv_limits;
+  if (!limits) return null;
+  const field = el("input", {
+    type: "number",
+    min: "1",
+    max: String(limits.max),
+    step: "1",
+    required: "",
+    value: String(limits.allowed),
+  });
+  const form = el(
+    "form",
+    { class: "bar tv-limit" },
+    el("label", {}, "TV limit", field),
+    el("button", { type: "submit" }, "Set"),
+    account.tv_limit == null
+      ? null
+      : el(
+          "button",
+          { type: "button", onclick: () => void setTvLimit(account, null) },
+          `Back to the default (${limits.default})`,
+        ),
+    el("span", { class: "note" }, `Default ${limits.default}, at most ${limits.max}.`),
+  );
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    if (!(field instanceof HTMLInputElement) || !field.reportValidity()) return;
+    void setTvLimit(account, Number(field.value));
+  });
+  return form;
 };
 
 const showAccount = async (key: string) => {
@@ -238,6 +318,7 @@ const showAccount = async (key: string) => {
     return;
   }
   lookedUp = answer.json.account.id;
+  markAccountRow();
   card.append(el("h2", {}, answer.json.account.email), accountCard(answer.json.account));
 };
 
@@ -246,6 +327,85 @@ find("#account-find").addEventListener("submit", event => {
   const key = input("#account-key").value.trim();
   if (key) void showAccount(key);
 });
+
+// --- The list of accounts (GET /ops/accounts; the Worker's page has no #account-rows) ---
+
+const accountRows = document.querySelector<HTMLElement>("#account-rows");
+
+const markAccountRow = () => {
+  for (const row of accountRows?.querySelectorAll<HTMLElement>("tr") ?? [])
+    row.setAttribute("aria-selected", String(row.dataset.accountId === lookedUp));
+};
+
+const openAccountRow = async (id: string) => {
+  await showAccount(id);
+  find("#account").scrollIntoView({ behavior: "smooth", block: "nearest" });
+};
+
+/** Only the latest list is shown, when answers come back out of order. */
+let listing = 0;
+const loadAccounts = async () => {
+  if (!accountRows) return;
+  const asked = ++listing;
+  const query = new URLSearchParams({
+    state: input("#account-state").value,
+    q: input("#account-key").value.trim(),
+  });
+  const answer = await call(`/accounts?${query.toString()}`, listsAccounts);
+  if (asked !== listing) return;
+  accountRows.replaceChildren();
+  const count = find("#account-count");
+  if (!answer.ok) {
+    count.textContent = answer.problem;
+    return;
+  }
+  const { accounts, total } = answer.json;
+  count.textContent =
+    total === 0
+      ? "No accounts."
+      : accounts.length < total
+        ? `The newest ${accounts.length} of ${total}. Type to narrow it.`
+        : `${total} ${total === 1 ? "account" : "accounts"}.`;
+  for (const account of accounts)
+    accountRows.append(
+      el(
+        "tr",
+        {
+          tabindex: "0",
+          "data-account-id": account.id,
+          "aria-selected": String(lookedUp === account.id),
+          onclick: () => void openAccountRow(account.id),
+          onkeydown: event => {
+            if (event instanceof KeyboardEvent && event.key === "Enter") void openAccountRow(account.id);
+          },
+        },
+        el("td", {}, account.email),
+        el("td", {}, when(account.created_at)),
+        el(
+          "td",
+          {},
+          account.closed_at
+            ? account.purged_at
+              ? "Closed, deleted"
+              : "Closed"
+            : account.confirmed_at
+              ? "Open"
+              : "Not confirmed",
+        ),
+        el("td", {}, `${account.devices} of ${account.allowed}${account.tv_limit == null ? "" : " (given)"}`),
+        el("td", {}, account.notice_count || "-"),
+      ),
+    );
+};
+
+if (accountRows) {
+  let typing: ReturnType<typeof setTimeout> | undefined;
+  find("#account-key").addEventListener("input", () => {
+    clearTimeout(typing);
+    typing = setTimeout(() => void loadAccounts(), 250);
+  });
+  find("#account-state").addEventListener("change", () => void loadAccounts());
+}
 
 // --- Notices ---
 

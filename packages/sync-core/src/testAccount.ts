@@ -29,7 +29,7 @@ export interface TestList {
   id: string;
   rev: number;
   name: string;
-  kind: "m3u" | "xtream";
+  kind: "m3u" | "xtream" | "stremio";
   url?: string;
   server?: string;
   username?: string;
@@ -122,7 +122,8 @@ const readManifest = (value: unknown): TestManifest => {
 const readList = (value: unknown): TestList => {
   const item = record(value, "A list");
   if (item.format !== 1) throw new Error("A list has an unknown format");
-  if (item.kind !== "m3u" && item.kind !== "xtream") throw new Error("A list has an unknown kind");
+  if (item.kind !== "m3u" && item.kind !== "xtream" && item.kind !== "stremio")
+    throw new Error("A list has an unknown kind");
   const read: TestList = {
     format: 1,
     id: text(item.id, "A list's id"),

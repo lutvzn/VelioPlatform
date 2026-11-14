@@ -8,7 +8,7 @@
 
 import { MIN_PASSWORD_LENGTH } from "@velio/sync-core";
 import type { OwnerRecord } from "../account.ts";
-import { deviceStatus, type DeviceRow } from "../lib/vault.ts";
+import type { DeviceRow } from "../lib/vault.ts";
 import { OwnerBundle, RememberChoice, UnlockForm } from "./vault.tsx";
 
 const Problem = () => <p id="form-problem" class="problem" role="alert"></p>;
@@ -256,23 +256,24 @@ const CurrentPassword = ({ email, label = "Your password" }: { email: string; la
 /** A day as 2026-11-10, in UTC. */
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
+const signedOut = (devices: DeviceRow[]) => devices.filter(device => device.signed_out_at !== null).length;
+
+/** How many TVs: their names are sealed, and only the TVs page opens them. */
 const Devices = ({ devices }: { devices: DeviceRow[] }) => (
   <section>
     <h2>TVs</h2>
-    {devices.length === 0 ? (
-      <p>No TVs yet.</p>
-    ) : (
-      <ul class="rows">
-        {devices.map(device => (
-          <li>
-            <div class="row-head">
-              <strong data-device-row={device.id}>{device.name}</strong>
-              <span class="note">{deviceStatus(device)}</span>
-            </div>
-          </li>
-        ))}
-      </ul>
-    )}
+    <p>
+      {devices.length === 0
+        ? "No TVs yet."
+        : devices.length === 1
+          ? "You have 1 TV."
+          : `You have ${devices.length} TVs.`}
+    </p>
+    {signedOut(devices) > 0 ? (
+      <p class="note">
+        Signed out on the TV: {signedOut(devices)}. Remove it on the TVs page to take it off the account.
+      </p>
+    ) : null}
     <p>
       <a href="/pair" class="button">
         Sign in a TV
@@ -490,8 +491,8 @@ export const Privacy = () => (
     <p class="note">Draft. To be reviewed before Velio is open to the public.</p>
     <h2>What Velio can't read</h2>
     <p>
-      Your lists, profile names, PINs and keys are encrypted on your devices before they're sent. Velio can't
-      read them, and neither can anyone who gets a copy of its databases. See{" "}
+      Your lists, profile and TV names, PINs and keys are encrypted on your devices before they're sent. Velio
+      can't read them, and neither can anyone who gets a copy of its databases. See{" "}
       <a href="/security">how Velio protects your lists</a>.
     </p>
     <h2>What Velio holds</h2>
@@ -500,7 +501,7 @@ export const Privacy = () => (
         Your email address, when you made the account and accepted the terms, the salt and settings your
         password is turned into keys with, and a hash of your sign-in key.
       </li>
-      <li>Your sessions in browsers, and your TVs' names and when they last synced.</li>
+      <li>Your sessions in browsers, and how many TVs you have and when they last synced.</li>
       <li>How many profiles and lists you have, and when they changed.</li>
       <li>If you made a recovery key: a copy of your keys sealed under it, and a hash of its sign-in key.</li>
       <li>
@@ -585,8 +586,8 @@ export const Security = () => (
       Content-Security-Policy, and only over HTTPS.
     </p>
     <p>
-      Velio knows your email address, your TVs' names, how many profiles and lists you have, and when things
-      happen. See <a href="/privacy">Privacy</a>.
+      Velio knows your email address, how many TVs, profiles and lists you have, and when things happen. See{" "}
+      <a href="/privacy">Privacy</a>.
     </p>
 
     <h2>A copy for you</h2>

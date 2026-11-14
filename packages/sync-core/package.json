@@ -10,7 +10,8 @@
   },
   "scripts": {
     "tsc": "tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "vectors": "VECTORS=write vitest run test/vectors.test.ts"
   },
   "dependencies": {
     "hash-wasm": "4.13.0",

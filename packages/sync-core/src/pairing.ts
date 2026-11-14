@@ -8,7 +8,8 @@
 //
 // The TV seals its public key and name under each secret, so the phone
 // knows which key to box the profile keys to; a server that swapped in a key
-// of its own couldn't seal it. The phone answers with the owner's public keys,
+// of its own couldn't seal it. The name is sent only sealed: the phone keeps
+// it in the manifest, sealed under the account key. The phone answers with the owner's public keys,
 // sealed the same way, so the TV knows whose signatures and boxes to trust.
 //
 // The typed secret is short enough that a hostile server could try every
@@ -20,6 +21,7 @@ import nacl from "tweetnacl";
 import { toBase64, utf8 } from "./bytes.ts";
 import { openJson, sealJson, type Sealed } from "./crypto.ts";
 import { id, ReadProblem, record, text } from "./read.ts";
+import { MAX_DEVICE_NAME_LENGTH } from "./records.ts";
 
 /** Crockford's base32: no I, L, O or U, so a code reads back the same. */
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -27,7 +29,6 @@ export const PAIRING_ID_LENGTH = 4;
 const CODE_SECRET_LENGTH = 8;
 const QR_SECRET_BYTES = 16;
 export const PAIRING_MS = 10 * 60_000;
-export const MAX_DEVICE_NAME_LENGTH = 40;
 
 export type PairingKind = "qr" | "code";
 
@@ -102,7 +103,7 @@ export const readPairingCode = (input: string): ReadCode | null => {
 
 export const PAIRING_ID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{4}$/;
 
-// --- What the TV sends: its key and name, sealed under each secret, and the proofs ---
+// --- What the TV sends: its key, its key and name sealed under each secret, and the proofs ---
 
 export interface DeviceInfo {
   format: 1;
@@ -118,17 +119,18 @@ export const sealDeviceInfo = (secrets: PairingSecrets, info: DeviceInfo): Seale
   code: sealJson(pairingKey("code", secrets.code), info, 256),
 });
 
-/** The body of POST /v1/pair. */
+/**
+ * The body of POST /v1/pair. The name is only in `sealed`. (VelioTV builds
+ * from before that send it plain as well; the server ignores it.)
+ */
 export interface PairRequest {
   publicKey: string;
-  name: string;
   sealed: SealedDeviceInfo;
   proofs: Record<PairingKind, string>;
 }
 
 export const pairRequest = (secrets: PairingSecrets, info: DeviceInfo): PairRequest => ({
   publicKey: info.publicKey,
-  name: info.name,
   sealed: sealDeviceInfo(secrets, info),
   proofs: pairingProofs(secrets),
 });

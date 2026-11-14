@@ -4,11 +4,11 @@
 
 Typing an Xtream login with a TV remote is the slowest part of setting up VelioTV. With sync, the user types it once on a phone or computer, and each TV signs in by scanning a QR code.
 
-Status: Phase 1 (accounts) built and deployed to velio.tv, 2026-11-10. Phase 2 (profiles and lists) built, tested and deployed, 2026-11-10. Phase 3's server half (signing in TVs, `/v1/sync`) built, tested and deployed, 2026-11-10. Phase 4's web half (profile pictures and PINs) and Phase 5's server half (live updates) built, tested and deployed, 2026-11-10. Phase 6's server and web half (the TVs page, the password, the recovery key, deleting the account) built, tested and deployed, 2026-11-10. Phase 7's server and web half (security review and fixes, headers, list export, docs) built, tested and deployed, 2026-11-10. Phase 8's server and web half (notices, closing accounts, the terms and privacy drafts) built, tested and deployed, 2026-11-10, with `POST /v1/signout` for TVs; `OPS_TOKEN` set; the lawyer's review and the DMCA agent are the user's. VelioTV's half is planned in `../VelioTV/SYNC-PLAN.md`. The VelioTV halves of Phases 3 to 6 wait until the server side of every phase is done (the user's choice, 2026-11-10). Phase 0 has two items left (see its results).
+Status: Phase 1 (accounts) built and deployed to velio.tv, 2026-11-10. Phase 2 (profiles and lists) built, tested and deployed, 2026-11-10. Phase 3's server half (signing in TVs, `/v1/sync`) built, tested and deployed, 2026-11-10. Phase 4's web half (profile pictures and PINs) and Phase 5's server half (live updates) built, tested and deployed, 2026-11-10. Phase 6's server and web half (the TVs page, the password, the recovery key, deleting the account) built, tested and deployed, 2026-11-10. Phase 7's server and web half (security review and fixes, headers, list export, docs) built, tested and deployed, 2026-11-10. Phase 8's server and web half (notices, closing accounts, the terms and privacy drafts) built, tested and deployed, 2026-11-10, with `POST /v1/signout` for TVs; `OPS_TOKEN` set; the lawyer's review and the DMCA agent are the user's. VelioTV's half is planned in `../VelioTV/SYNC-PLAN.md`. The VelioTV halves of Phases 3 to 6 wait until the server side of every phase is done (the user's choice, 2026-11-10). Phase 0 has two items left (see its results). **2026-11-13: the server moves off Cloudflare** to a self-hostable Rust server with SQLite ("Moving off Cloudflare"); the Worker keeps serving velio.tv until the Rust server passes the same tests.
 
 ## Decided by the user
 
-- **Hosting:** Cloudflare Workers. **Web UI:** HTMX 4.
+- **Hosting:** ~~Cloudflare Workers~~ a **self-hostable Rust server with SQLite** (2026-11-13), the same design: lists stored encrypted, the server holding only ciphertext. See "Moving off Cloudflare". **Web UI:** HTMX 4.
 - **End-to-end encrypted**, and **the login is the key**: no separate PIN or key to unlock the lists (2026-11-10). A PIN alone would be too few guesses to protect a copied database.
 - **Account-wide**, with **profiles**: an account has several profiles, and the owner decides which profiles can use each list (2026-11-10).
 - **Signing in:** TVs sign in with a QR code. Other platforms, now and later (the web, phone and desktop apps), sign in with **email and password** (2026-11-10).
@@ -18,6 +18,8 @@ Status: Phase 1 (accounts) built and deployed to velio.tv, 2026-11-10. Phase 2 (
 Everything below is a recommendation, open to change.
 
 ## Stack
+
+The Worker's stack, as built through Phase 8. The server half is being replaced; see "Moving off Cloudflare" for the new one. The browser half (HTMX 4, `vault.js`, TweetNaCl, Argon2id) and `sync-core` stay.
 
 | Part                | Choice                                                                                                                                                   | Why                                                                                                                                        |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -98,7 +100,7 @@ interface SyncedList {
   id: string; // kept, so VelioTV's channel edits and favourites still match
   rev: number; // goes up by one on each change to this list
   name: string;
-  kind: "m3u" | "xtream";
+  kind: "m3u" | "xtream" | "stremio"; // "stremio": a Stremio add-on, `url` its manifest (no guide)
   url?: string;
   server?: string;
   username?: string;
@@ -115,7 +117,7 @@ interface Manifest {
   rev: number; // goes up by one on any change in the account
   profiles: { id: string; rev: number; lists: string[] }[]; // each profile's record revision, and its lists
   lists: { id: string; rev: number; keyRev: number }[]; // every list, used by a profile or not
-  devices: { id: string; profiles: string[] }[];
+  devices: { id: string; profiles: string[]; publicKey?: string; name?: Sealed }[]; // name: sealed under the account key
 }
 ```
 
@@ -138,11 +140,11 @@ Lists are a few KB each, so even removing a TV re-encrypts everything in well un
 
 ### Limits per account
 
-Each account has at most **10 TVs** (devices signed in by QR code), **8 profiles** and **50 lists**. The server enforces these, because it can count records without reading them: the Durable Object refuses a change that would go over, including the one that signs in an eleventh TV. See "Legal and abuse" for why.
+Each account has at most **10 TVs** (devices signed in by QR code), **8 profiles** and **50 lists**. The server enforces these, because it can count records without reading them: the Durable Object refuses a change that would go over, including the one that signs in an eleventh TV. See "Legal and abuse" for why. Since 2026-11-14 the Rust server lets the operator give an account more or fewer TVs ("TV limits", under "Moving off Cloudflare").
 
 ## Signing in a TV
 
-1. VelioTV's first start (or Settings → Account) shows **Sign in with a phone**. The TV makes its device key pair and two **pairing secrets**: 128 bits for the QR code, and 40 bits (8 characters) to type. It sends `POST /v1/pair` with its public key and name, the same sealed under each secret, and a proof of each secret (a hash the server can check but not turn into the key), and gets a 4-character pairing ID and a poll token back.
+1. VelioTV's first start (or Settings → Account) shows **Sign in with a phone**. The TV makes its device key pair and two **pairing secrets**: 128 bits for the QR code, and 40 bits (8 characters) to type. It sends `POST /v1/pair` with its public key, and its public key and name sealed under each secret, and a proof of each secret (a hash the server can check but not turn into the key), and gets a 4-character pairing ID and a poll token back.
 2. The TV shows a QR code for `https://velio.tv/pair#<id>.<secret>`, and a code to type, such as `K7QM-2XHF-9WRT`.
 3. On the phone, the page opens; if not signed in, it asks for email and password first, then carries on. The fragment after `#` never reaches the server, so **the server never sees the pairing secret.** `vault.js` keeps it in `sessionStorage` across the sign-in and takes it out of the address bar and history.
 4. The page finds the TV (`POST /pair/find`) with the ID and the proof, so another account can't fetch a TV's sealed details by guessing IDs. It opens the TV's name and key with the secret.
@@ -187,8 +189,8 @@ D1 (lookups across accounts):
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `accounts` | id, email (unique), confirmed, salt, Argon2id settings, auth key hash, created; closed (when, why); when a closed account's data was deleted                    |
 | `sessions` | token hash, account, created, last used, expires                                                                                                                |
-| `devices`  | id, account, name, public key, token hash, signed in, last pulled, signed out on the TV                                                                         |
-| `pairings` | id, poll token hash, proof hashes, device id, public key, name and sealed details, expires; once signed in: account, payload, token until picked up             |
+| `devices`  | id, account, public key, token hash, signed in, last pulled, signed out on the TV                                                                               |
+| `pairings` | id, poll token hash, proof hashes, device id, public key, sealed details, expires; once signed in: account, payload, token until picked up                      |
 | `notices`  | reference, received, kind, sender (name, email, organization), the account named and matched, the work, statements, signature, details, status, action, handled |
 
 Each account's Durable Object (SQLite):
@@ -259,7 +261,7 @@ What courts and prosecutors have acted on in IPTV cases is selling or promoting 
    - users add only sources they have the right to use;
    - the service provides no content and can't see what users store;
    - accounts that break the terms can be closed, and repeat infringers are closed.
-6. **A privacy notice** at `/privacy`: what the server holds (email, salt, hashes, device names, counts, timestamps, IP addresses in logs) and what it can't read.
+6. **A privacy notice** at `/privacy`: what the server holds (email, salt, hashes, counts, timestamps, IP addresses in logs) and what it can't read.
 7. **Abuse contact and notices.**
    - An abuse and copyright form at `/abuse`, and an `abuse@` address on the domain.
    - Each notice is recorded in `notices`, with what was done.
@@ -381,7 +383,7 @@ The first open on the TV (263 ms, the signature check 165 ms of it) again misses
 
 **Still to do for Phase 0:**
 
-1. Move the probe's opening into a worker, for the new done check (under 1 s, UI at 60 fps).
+1. ~~Move the opening into a worker~~ Done in VelioTV, 2026-11-10: in Chromium 47 (Tizen 3), the legacy build opened the test server's account in its sync worker in 85–89 ms (231 ms with starting the worker), with no frame over 17 ms. Still to see on the test TV (VelioTV's `SYNC-PLAN.md`, "Results").
 2. Certificates on 2017 TVs: run the `sync` probe on one when one is at hand, or compare Tizen 3's and webOS 3's root lists with the chain above. Until then, the choice of certificate authority stays open.
 
 ### Phase 1 results (2026-11-10)
@@ -607,6 +609,225 @@ The TV stays in the signed manifest, with its boxed profile keys, as only the ow
 Tests: 73 in the Workers pool (3 new: the token and socket, the pages, the token check, the CORS preflight). In Chrome against `wrangler dev`, with two TVs simulated in Node: the TV signed out, its socket closed with 4401, its pull answered 401; the TVs page showed it signed out with only Remove; removing it worked, and the other TV opened its new keys. No console problems.
 
 **Deployed** to velio.tv with Phase 8 (version a0b0e0ed). On velio.tv, `POST /v1/signout` answers 401 without a token or with a wrong one, and its CORS preflight 204.
+
+### Stremio add-ons as lists (2026-11-12)
+
+VelioTV can show a Stremio add-on's films and series (VelioTV's PLAN.md, "Stremio add-ons"), so a list can now be a third kind, `"stremio"`, whose `url` is the add-on's manifest. On the Lists page, the list form has "Stremio add-on" beside M3U and Xtream, with an "Add-on address" field; an install link (`stremio://…`) means `https://`, and `/manifest.json` is added when it's missing (`addonManifestUrl()`). An add-on has no guide or refresh choice. The server stores lists encrypted, so it needed no change. An app built before this can't open a pull with an add-on in it (`readList()` refuses the kind); none is released.
+
+**Deployed** to velio.tv (version 9a41af31), with no D1 migration. `pnpm check` passed (100 tests in `sync-core`, 76 in the Workers pool), and velio.tv's `vault.js` has the new choice.
+
+## Moving off Cloudflare (2026-11-13)
+
+The user's choice: the server becomes **self-hostable**, written in **Rust**, with **SQLite** and the same **HTMX 4** pages, on the same design. Lists, profiles and keys stay end-to-end encrypted, and the server still holds only ciphertext, public keys and hashes. Anyone can run it for their own household; velio.tv becomes one install of it.
+
+Decided with the user, 2026-11-13:
+
+- **Built alongside, then the Worker deleted.** The Rust server lives in `apps/server`. velio.tv stays on the Worker until the Rust server passes the same tests, then velio.tv moves and `apps/sync` is removed.
+- **Starting fresh.** velio.tv holds only test accounts (no real TV is signed in, as VelioTV's half isn't released), so nothing is migrated from D1 or the Durable Objects.
+- **Email over SMTP or Resend**, whichever is configured. **Turnstile is optional**: on when its keys are set (velio.tv sets them), otherwise sign-up and resets rely on the rate limits alone.
+- ~~velio.tv runs on a VPS behind Caddy.~~ Changed 2026-11-14: **the server ships as a distroless container image**, and whoever runs it picks their own reverse proxy. velio.tv runs it behind a **Cloudflare Tunnel**, with its DNS staying at Cloudflare. **Backups:** a nightly copy, kept 30 days on the host and also in S3-compatible storage. Which machine runs velio.tv's container isn't chosen yet.
+
+### What stays, and what changes
+
+**Unchanged:** everything the browser and the TVs see. That is `sync-core` (still TypeScript, as browsers and TVs run it), `vault.js`, `ops.js`, `app.css`, pinned HTMX 4.0.1, the page markup `vault.js` hooks into, every route and its answers, the `/v1` JSON, the WebSocket protocol (`events.ts`), the cookies, the headers and the CSP. A TV or browser can't tell which server it talks to. VelioTV's `SYNC-PLAN.md` needs no change beyond the server's address being configurable.
+
+**Rewritten in Rust:** what runs on the server.
+
+- The Worker (`worker.tsx`, `routes/`, `lib/`), and the views (`views/*.tsx`), the same markup.
+- The Durable Object (`account.ts`): the SQLite tables, and holding the TVs' sockets.
+- The server's half of `sync-core`: `readChange()`, `readStoredState()`, `readManifest()`, `storedManifest()`, `checkMatches()`, `checkRekeyed()`, `applyChange()` and `pullFor()`, with their limits, sizes and id patterns, plus the pairing id pattern and the events constants.
+
+### Stack
+
+| Part              | Choice                                                                                                                          | Why                                                                                                                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language          | Rust, stable                                                                                                                    | The user's choice. One static binary is easy to self-host                                                                                                                                                                                                   |
+| HTTP              | `axum` on `tokio`, with `tower-http` for body limits and headers                                                                | Routes, WebSockets and long polls in one place                                                                                                                                                                                                              |
+| HTML              | `maud`                                                                                                                          | Checked at compile time and escapes by default, like `hono/jsx`. Fragments are plain functions, as the JSX components were                                                                                                                                  |
+| Database          | SQLite through `rusqlite` (bundled), WAL, one file                                                                              | One writer: each change runs in a `BEGIN IMMEDIATE` transaction, which keeps changes strictly ordered, as one Durable Object per account did                                                                                                                |
+| Signatures        | `ed25519-dalek`, `verify_strict`                                                                                                | The server only checks the owner's signatures. Strict checking refuses anything TweetNaCl on a TV might refuse                                                                                                                                              |
+| Hashes and tokens | `sha2`, `hmac`, `subtle`, `getrandom`; `base64` (standard, padded)                                                              | The same SHA-256 hashes, HMAC'd made-up salts, constant-time comparisons and token sizes as now                                                                                                                                                             |
+| Email             | `lettre` for SMTP, or Resend's HTTP API through `reqwest` (rustls); the dev outbox                                              | Whichever is configured. `DEV_MODE` writes to `dev_outbox`, as now                                                                                                                                                                                          |
+| Bot check         | Turnstile, optional                                                                                                             | On only when `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET` are set                                                                                                                                                                                            |
+| Rate limits       | In memory, fixed windows, the same limits and keys                                                                              | One process, so no shared store is needed. A restart forgets the counts, which only errs toward a fresh minute                                                                                                                                              |
+| Live updates      | `axum` WebSockets; a registry of each account's sockets                                                                         | Sends `rev N`, `removed` and the close codes as the Durable Object did. Pings are answered without touching the database                                                                                                                                    |
+| Daily clean-up    | A task in the process, at 04:17 UTC                                                                                             | Replaces the Worker's cron                                                                                                                                                                                                                                  |
+| Static files      | Built by `scripts/build-client.mjs` as now, then embedded in the binary (`rust-embed`)                                          | One file to ship. `Cache-Control: no-cache` with an ETag, as now                                                                                                                                                                                            |
+| TLS               | A reverse proxy in front, the operator's choice; the server speaks plain HTTP                                                   | Certificates are the proxy's job. velio.tv's is a Cloudflare Tunnel, so its edge and certificates stay those Phase 0 measured. A self-hoster on Caddy can choose an RSA key and the ISRG Root X1 chain (`key_type rsa2048`, `preferred_chains`) for old TVs |
+| Tooling           | `cargo fmt`, `cargo clippy -D warnings`, `cargo test`, added to `pnpm check`                                                    | One command checks both halves                                                                                                                                                                                                                              |
+| Shipping          | A distroless image (`gcr.io/distroless/static-debian13:nonroot`) holding one static musl binary, built by the root `Dockerfile` | No shell or package manager, and not root. As there's no cron, the binary makes the backups and answers the health check itself                                                                                                                             |
+
+### Data
+
+One SQLite file (`velio.db`). The D1 tables keep their columns (`accounts`, `sessions`, `email_links`, `devices`, `pairings`, `notices`, `dev_outbox`) in one fresh migration, `0001_init.sql`, as there is nothing to migrate. Each Durable Object's tables become shared tables keyed by account, prefixed `vault_` so the manifest's TVs don't clash with the signed-in TVs in `devices`:
+
+| Table               | Key                      | Holds                                                                |
+| ------------------- | ------------------------ | -------------------------------------------------------------------- |
+| `vault_owner`       | account                  | The owner bundle, the signing and box public keys, updated           |
+| `vault_recovery`    | account                  | The SHA-256 of the recovery auth key, and the bundle sealed under it |
+| `vault_manifest`    | account                  | The current signed manifest (body and signature)                     |
+| `vault_profiles`    | account, profile         | rev, the sealed record, the profile key under the account key        |
+| `vault_lists`       | account, list            | rev, keyRev, the sealed record, the list key under the account key   |
+| `vault_list_keys`   | account, list, profile   | The list key under that profile's key                                |
+| `vault_devices`     | account, device          | A TV the manifest names                                              |
+| `vault_device_keys` | account, device, profile | The profile key boxed for that TV                                    |
+
+Every `vault_` table references `accounts` with `ON DELETE CASCADE`, and `PRAGMA foreign_keys = ON`. What used to be two steps (the Durable Object, then D1) is now one transaction. So a reset, a deletion or a purge either happens whole or not at all, and the "if D1 failed after the object" cases in Phases 6 and 8 go away.
+
+Migrations live in `apps/server/migrations/` and run at startup, in order, recorded in `PRAGMA user_version`.
+
+### Configuration
+
+Environment variables (`--env-file` for the container). README.md lists them for operators:
+
+| Variable                                                                 | Needed          | Meaning                                                                                                                                   |
+| ------------------------------------------------------------------------ | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `VELIO_SITE_URL`                                                         | yes             | Such as `https://velio.tv`. Used for the Origin check, links in emails, and the QR address                                                |
+| `VELIO_LISTEN`                                                           | no              | Default `127.0.0.1:8787`; the image sets `0.0.0.0:8787`                                                                                   |
+| `VELIO_DATABASE`                                                         | no              | Default `./velio.db`; the image sets `/data/velio.db`                                                                                     |
+| `VELIO_TRUSTED_PROXY`                                                    | no              | The proxy's addresses or ranges, comma-separated. From them, the client IP comes from `X-Forwarded-For`; otherwise from the socket        |
+| `VELIO_BACKUP_DIR`                                                       | no              | Nightly copies, kept 30 days; the image sets `/data/backups`. Unset, there are no backups                                                 |
+| `VELIO_BACKUP_S3_URL`, `_REGION`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY` | no              | A second copy in S3-compatible storage, path-style, signed with Signature Version 4. The bucket's lifecycle rule deletes it after 30 days |
+| `VELIO_NETWORK_PROVIDER`                                                 | no              | Who carries traffic and ends HTTPS, such as `Cloudflare`, named on `/privacy` and `/security`                                             |
+| `PRELOGIN_SECRET`                                                        | yes             | As now: the HMAC key for made-up salts                                                                                                    |
+| `OPS_TOKEN`                                                              | no              | As now; `/ops` is a 404 without it                                                                                                        |
+| `EMAIL_FROM`, `ABUSE_EMAIL`                                              | yes             | As now                                                                                                                                    |
+| `SMTP_URL` or `RESEND_API_KEY`                                           | one, unless dev | Such as `smtps://user:pass@mail.example:465`. With neither, the server refuses to start (outside `DEV_MODE`)                              |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET`                                 | no              | Both or neither. Neither turns Turnstile off: the widget and its CSP entry go too                                                         |
+| `VELIO_TV_LIMIT`, `VELIO_TV_LIMIT_MAX`                                   | no              | Default 10 and 50: the TVs each account has, and the most `/ops` can give one ("TV limits")                                               |
+| `DEV_MODE`                                                               | no              | As now: the dev outbox, `/dev/outbox`, and Turnstile's test keys if it's on                                                               |
+
+The server refuses to start with a missing or malformed setting, rather than fail on the first request.
+
+### Checking it matches
+
+Three layers, so the port is exact rather than close:
+
+1. **Vectors from `sync-core`.** A script (`packages/sync-core/scripts/vectors.ts`) uses the TypeScript code as the reference. It builds accounts and changes, then writes each case as JSON with the state before, the input, and the expected result: the state after, or the problem (`behind`, `refused` or `limit`). The cases cover accepted changes of every kind, every refusal in `readChange()`, `checkMatches()` and `checkRekeyed()`, the limits, bad sizes and bad base64, plus `pullFor()` for TVs with different profiles. Rust's tests replay them, and `pnpm check` regenerates and compares them, so a change on either side that isn't made on both fails.
+2. **The Worker tests, over HTTP.** The 76 tests stay in `apps/sync/test` until R6, unchanged, and run twice: against the Worker (`vitest.config.ts`) and against the Rust server (`vitest.server.config.ts`, `pnpm --filter @velio/sync test:server`). The second config points `cloudflare:test` and `cloudflare:workers` at a stand-in (`test/server/runtime.ts`): its `fetch` sends each request to the server binary, which `test/server/globalSetup.ts` builds and starts on a free port with a temporary database and `DEV_MODE`, with `X-Forwarded-For` in place of `cf-connecting-ip`; an upgrade opens a real WebSocket. Its `env.DB` reads and writes the temporary database with `node:sqlite`. Each phase adds its files to the config's list, and `pending` names the tests that wait for a later phase. When all of them pass, the routes, answers, cookies and headers match. At R6 the tests and the stand-in move to `apps/server/test`, without the Worker config.
+3. **Rust unit tests** for what the vectors don't reach: the rate limiter, sessions, the socket registry, configuration, and the clean-up's times.
+
+Then the same checks by hand as in Phases 1 to 8, in Chrome against the local server with a TV simulated in Node. Nothing sent may hold a password, a profile name or a list address.
+
+### Differences, on purpose
+
+- **The probe** (`/v1/probe`) reported TLS details from Cloudflare's `cf` object. Now it reads `X-Velio-TLS-Version`, `X-Velio-TLS-Cipher` and `X-Velio-HTTP-Protocol`, set by the proxy, and believes them only from `VELIO_TRUSTED_PROXY`. On velio.tv a request-header Transform Rule sets them from `cf.tls_version`, `cf.tls_cipher` and `http.request.version`; Caddy sets them from `{http.request.tls.version}`, `{http.request.tls.cipher_suite}` and `{http.request.proto}` (README.md). Without them, the TLS details are `null` and the HTTP version is the one the server saw. `colo` is always `null`.
+- **The CSP without Turnstile** names no `challenges.cloudflare.com`, and has `frame-src 'none'`.
+- **Logs and backups.** Logs go to stdout, and the host keeps them 7 days (journald with `MaxRetentionSec=7d`). Each night at 04:17 UTC, after the clean-up, the server copies the database with `VACUUM INTO` to `VELIO_BACKUP_DIR`, keeps 30 days of copies, and puts tonight's in S3 when that's set; the bucket's lifecycle rule deletes it after 30 days. `velio-server backup` makes one at once. The copies hold ciphertext for every list, but also the accounts' email addresses.
+- **Who handles what follows the settings.** `/privacy` and `/security` name the network provider (`VELIO_NETWORK_PROVIDER`), Resend or "an email provider", Turnstile and the backups only when they're configured, so they stay true on any install. The terms didn't name Cloudflare and don't change. On velio.tv Cloudflare stays a processor: it carries the traffic and ends HTTPS, as it did for the Worker, and runs Turnstile; it no longer holds the data.
+- **The clean-up runs at 04:17 UTC**, and once at start, where R2's ran every 24 hours from start.
+- **`/healthz`** answers `ok` once the database does, for the image's health check (`velio-server health`), and isn't logged when it's fine.
+- **Sockets across restarts.** A restart closes every TV's socket. TVs reconnect with `reconnectDelay()`, already spread out so they don't all come back at once, and catch up from the `rev N` sent on connecting. A Durable Object's sockets survived a deploy; these don't.
+- **Ten-millisecond CPU limits are gone.** Nothing needs the test account to be precomputed any more, but it stays a fixture, as VelioTV's probe uses the same file.
+
+### TVs' names sealed (2026-11-14)
+
+The user's choice: the server no longer knows what a TV is called. The name the phone opens from the TV's sealed details goes into the TV's manifest entry, sealed under the account key (`{ format: 1, name }`, padded to 256 bytes) and sealed again on every change, so the server can't read it, tell when it changes, or move it to another TV, and a TV can't read the others' names. `openState` opens it; `vault.js` fills `[data-tv-name]` on the TVs page and the signed-in message. The account page, which doesn't carry the sealed state, shows only how many TVs there are. Both servers ignore a plain `name` in `POST /v1/pair`, which older VelioTV builds still send, and drop the columns (`0002_sealed_device_names.sql` here, `0005_sealed_device_names.sql` on D1). A TV signed in before has no name and shows as "TV".
+
+### TV limits (2026-11-14)
+
+The user's choice, in place of a "public" mode of 10 TVs and a "private" one without a limit: every account has `VELIO_TV_LIMIT` TVs (default 10), and the operator can give one another limit on `/ops` (**Accounts**, or `ops.mjs tv-limit`), from 1 to `VELIO_TV_LIMIT_MAX` (default 50). `accounts.tv_limit` keeps it (`0003_tv_limits.sql`); NULL is the default, and giving the default stores NULL, so a later `VELIO_TV_LIMIT` holds for the account too. A limit that `VELIO_TV_LIMIT_MAX` has since gone below is held to it.
+
+- **The ceiling.** `MAX_DEVICES` in sync-core, now 50, is what any manifest may name: what still fits the manifest's 64,000 characters with 8 profiles, 50 lists and every TV on every profile (about 748 characters a TV entry; a test builds that account). `DEFAULT_DEVICE_LIMIT` is 10.
+- **Where it's checked.** `applyChange()` takes the account's limit (`deviceLimit`, default 10) and refuses, as `limit`, a change that would leave more TVs than that _and_ more than before. So a limit lowered below the TVs an account has keeps them and every other change working, and stops new ones until it's under. `withDevice()` takes it too, from the pairing form's `data-tv-limit`, so the phone says so before it signs anything. The vectors cover a TV past the limit, one within a limit given, and a change to an account over its limit.
+- **The Worker** keeps 10, as it passes no limit and is going.
+- **VelioTV** has to be built with this sync-core before any account goes past 10 TVs: older builds' `openPull()` refuses a manifest naming more than 10.
+- `/terms` says the default, from `VELIO_TV_LIMIT`.
+
+### Phases
+
+| #   | Phase           | Main work                                                                                                                                                                                                                                 | Done when                                                                                                                                                                                                       |
+| --- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  | Skeleton        | `apps/server`: configuration, the database and migrations, headers and CSP, body limits, client IP, rate limits, embedded static files, the layout and the public pages, `/v1/probe`; the test harness over HTTP; `cargo` in `pnpm check` | `hardening.test.ts` and `probe.test.ts` pass against the Rust server                                                                                                                                            |
+| R2  | Accounts        | Sign-up, confirming, `/prelogin`, sign-in, sessions, resets, mail (SMTP, Resend, dev outbox), optional Turnstile, the daily clean-up                                                                                                      | `accounts.test.ts` passes; sign-up to sign-in in Chrome with the real Argon2id, the password in no request                                                                                                      |
+| R3  | Vault           | The Rust port of the server's half of `sync-core`, and the vectors; `/profiles`, `/lists`, `/lists/:id`, `POST /changes`, `POST /unlock`                                                                                                  | Every vector passes in Rust; `vault.test.ts` passes; a dump of the database after adding lists holds no name, host, username or password                                                                        |
+| R4  | TVs             | Pairing (`/pair*`, `/v1/pair*`), `/v1/sync`, `/v1/events` with the socket registry, `/v1/signout`, `/devices`, the settings (password, recovery key, deleting the account)                                                                | `pair.test.ts`, `signout.test.ts` and `settings.test.ts` pass; the Phase 6 run in Chrome passes with two TVs simulated in Node                                                                                  |
+| R5  | Notices and ops | `/abuse`, notices, the `/ops` API and page, closing, opening, the 30-day purge; `scripts/ops.mjs` unchanged                                                                                                                               | `notices.test.ts` passes, so all 76 pass; the Phase 8 run passes, with `ops.mjs` against the local server                                                                                                       |
+| R6  | Moving velio.tv | The distroless image, backups in the server, proxy ranges, `/healthz`; `/privacy` and `/security` from the settings; README; running the image behind a Cloudflare Tunnel and pointing velio.tv at it                                     | velio.tv answers through the tunnel with the same headers; the full Chrome run passes there; the TV probe reaches it over HTTPS. Then `apps/sync` and the Cloudflare D1, Durable Objects and Worker are deleted |
+
+**R1 done, 2026-11-13.** `apps/server` (axum 0.8, maud, rusqlite) serves the public pages, `/static` (embedded from `apps/sync/public/static` until R6, with ETags), `/v1/probe*` and the not-found answers, with the Worker's headers, CSP, body caps, CORS, Origin check and error answers. One SQLite file, migrations counted in `PRAGMA user_version`; rate limits in memory. `probe.test.ts` and `hardening.test.ts` pass against it, except the pairing-poll test (R4). `pnpm check` now also runs `check:server`: `cargo fmt --check`, `clippy -D warnings`, `cargo test` and `test:server`. A request for a known path with another method answers 404, as the Worker did, not 405.
+
+**R2 done, 2026-11-13.** Sign-up to sign-in worked in Chrome on `http://localhost:8787` with the real Argon2id. Sign-up, confirming (POST only), `/prelogin`, sign-in, `__Host-velio` sessions (30 days, renewed daily), sign-out, `/account`, resets, `/dev/outbox`, Turnstile and the daily clean-up are ported with the Worker's wording, status codes and rate-limit keys. `accounts.test.ts` passes against the Rust server, alongside probe and hardening. The differences from the Worker:
+
+- Mail links are full URLs from `VELIO_SITE_URL`, even in DEV_MODE, where the Worker used paths.
+- SMTP and Resend mail is sent after the answer, and failures are logged. The dev outbox is written before the answer.
+- Turnstile off (no keys) or DEV_MODE means no check.
+- The clean-up runs at start and then every 24 hours. `velio-server clean-up [--now MS]` runs it once and prints how many unconfirmed accounts went.
+- A form post counts as from this site when the browser sends `Sec-Fetch-Site: same-origin`, and only otherwise by `Origin`. In Chrome the Origin-only check refused sign-up: with `Referrer-Policy: no-referrer` a browser may send `Origin: null`, and the page may be open on another name for the server.
+- A body over the cap is read and dropped, up to 16 MiB or 10 s, before the 413, so the client reads the answer and not a broken pipe.
+- Test harness:
+  - The test files run one at a time, as they share one database and the clean-up test moves the clock 8 days on.
+  - `test/server/account.ts` and `cleanup.ts` stand in for the Worker modules `accounts.test.ts` imports.
+  - The runtime turns the tests' made-up addresses, such as `10.1.2.3.4`, into IPv6 ones.
+
+**R3 done, 2026-11-13.** `apps/server/src/sync_core` ports the server's half of `sync-core`: reading changes and manifests, checking the owner's Ed25519 signature, `applyChange()` with its refusals in the same words, `storedManifest()` and `pullFor()`. `vault.rs` keeps the account's records in the `vault_*` tables, one `BEGIN IMMEDIATE` transaction a change, and reads them back as the Durable Object held them. `/profiles`, `/lists`, `/lists/new`, `/lists/:id`, `/devices`, `POST /changes` and `POST /unlock` are ported with the Worker's markup, wording and status codes. Done when:
+
+- **The vectors.** `scripts/vectors.ts` writes `apps/server/tests/vectors.json`: 111 changes (the accepted chain from an empty account to TVs given and taken, and every refusal), 18 pulls and 19 states. They're made with a seeded PRNG, so the file is the same each run. `tests/vectors.rs` replays them, and every one comes out as in TypeScript. The script runs as a vitest test (`test/vectors.test.ts`), so `pnpm check` fails when the file is out of date, and `pnpm --filter @velio/sync-core vectors` writes it. It runs in vitest because Node's type stripping can't load `changes.ts`.
+- **`vault.test.ts`** passes against the Rust server. The stand-in `account.ts` gained `getState()` and `reset()`, and `runtime.ts` gained `runInDurableObject`, whose `storage.sql` answers with the account's rows in the `vault_*` tables.
+- **The dump.** A unit test in `vault.rs` replays the accepted chain, checks that each state reads back exactly, then dumps every table as text. It holds no profile name, list name, host, token, username or password.
+
+The differences from the Worker:
+
+- Ed25519 signatures are checked with `verify_strict`, which also refuses some malformed signatures that TweetNaCl takes. A real owner never makes one.
+- `serde_json` reads a few inputs differently from `JSON.parse`: lone surrogates in strings, nesting deeper than 128, and numbers such as `1e400`. Each is refused, where the Worker might have read it. No change vault.js builds has them.
+- A stored manifest that can't be read is a refusal, where the Durable Object threw and the Worker answered 500.
+- The account's TVs aren't told of a change yet (`TODO(R4)`, with the socket registry).
+
+**R4's tests pass, 2026-11-14; the Chrome run is next.** `routes/tv.rs` ports `/v1/pair`, `/v1/pair/{id}` (the 20 s wait, polled once a second), `/v1/sync` (ETags and 304s), `/v1/signout` and `/v1/events`. `routes/pair.rs` ports `/pair`, `/pair/find` and `/pair/{id}`, and signing in with `next=/pair` goes on to the pairing page. `routes/settings.rs` ports the password, the recovery key, recovering from the reset link and deleting the account. `events.rs` holds the socket registry, in memory: each account's open sockets, two per TV at most, sent "rev N" after each change and closed with 4401 when a TV is removed, signs out, or the account is reset or deleted. All 67 server tests pass (`pair`, `signout` and `settings` added, and the pairing-poll test in `hardening` is no longer pending), five runs in a row. The stand-in `account.ts` gained `recoveryMadeAt()`, and `runtime.ts` returns the protocol the server picked on a 101.
+
+The differences from the Worker:
+
+- A socket joins the registry before the 101 goes out, as the Durable Object accepted its sockets. Its first "rev N" checks the token again, so a signout or change between the check and the upgrade isn't missed. Without this, a signout right after connecting could leave the socket open.
+- A password change or a recovery sets the owner bundle, the credentials and the new session in one transaction, where the Worker wrote the Durable Object first and put the old bundle back if D1 failed.
+- Signing in a TV claims the pairing, applies the change and stores the TV's token in one database call. If the change is refused, the claim is undone, as on the Worker.
+- Open sockets live only as long as the process. After a restart, TVs reconnect and catch up from the first "rev N".
+
+**R5's tests pass, 2026-11-14; the Phase 8 run with `ops.mjs` is left for the end, with R4's Chrome run.** `routes/notices.rs` ports `/abuse`, with `notices.rs` reading and keeping a notice. `routes/ops.rs` ports the `/ops` page, its sign-in and the API: the bearer token, or the page's session cookie (`ops_session.rs`), which needs this site's origin on anything but GET. `closing.rs` closes and opens accounts. Closing marks the notice acted on, ends the account's sessions, links, pairings and open sockets, and mails the owner. The daily clean-up now deletes the data of accounts closed for more than 30 days. All 76 server tests pass, three runs in a row. The stand-in `closing.ts` gives the tests `CLOSED_KEEP_MS`.
+
+The differences from the Worker:
+
+- Closing, marking the notice and ending the sessions, links and pairings happen in one transaction, where D1 ran them as one batch.
+- A change through the cookie is judged as the web forms are, by Sec-Fetch-Site first, then Origin. The Worker checked Origin only.
+- The purge runs inside the clean-up's transaction. `velio-server clean-up` still prints only the count of unconfirmed accounts deleted; how many closed accounts' data went is written to stderr.
+
+**R4's and R5's manual runs pass, 2026-11-14,** in Chrome against the dev image (`velio-server:dev`, DEV_MODE, on `localhost:8788`), with three TVs simulated in Node.
+
+- **Phase 6:**
+  - Pairing worked by QR, and by a code typed in lower case with spaces.
+  - Each change reached the TVs as "rev N" on the socket, and ping got pong.
+  - Taking the Kids profile from Living room TV, and renaming the Kids list: Kids TV read the new name, and none of the earlier profile or list keys opened it.
+  - Removing a TV sent it `removed`, closed its socket with 4401 and answered its pull with 401, while the other TV carried on.
+  - The recovery key, a password change (a wrong current password refused; the TVs stay signed in), a reset with the recovery key typed in lower case with spaces, and deleting the account (its TV got `removed`, 4401 and 401, and signing in failed after).
+  - No password or recovery key was in any request, and there were no console errors.
+- **Phase 8:**
+  - `/abuse` refused a notice without the work, then without the statements, and kept what was typed. The full notice was mailed to the abuse address, with the account it named found and its HTML escaped.
+  - `ops.mjs`:
+    - `notices`, `notice`, `account`, `close` and `reopen` all worked.
+    - A wrong token got 401, a wrong `--confirm` changed nothing, and a second `reopen` got 409.
+    - Closing sent the TV `removed`, then 4401 and 401, marked the notice actioned, ended the owner's browser session and mailed them the reason. The email on reopening came too.
+  - `/ops` page:
+    - A wrong token got 401.
+    - The cookie was as designed: 8 h, `Path=/ops`, HttpOnly, Secure, SameSite=Strict, and the page's script can't read it.
+    - A notice's HTML showed as text.
+    - Close stayed off with another email or an empty reason. Case and outer spaces in the email were ignored.
+    - Closing and opening again both worked.
+    - The lookup took the email in any case, and an unknown one said "No such account".
+    - Signing out worked, after which the API got 401. No console errors.
+- **Found** (none new in the port; the Worker does the same):
+  - **Pairing a second TV in the same page view failed** with "This code doesn't open the TV's details". `showPairing()` in `client/vault.ts` cleared the code when `#main .done[role=status]` was there, but the find only swaps `#pair-step`, so the first TV's "signed in" status was still on the page. **Fixed, 2026-11-14:** the status is marked `data-seen` once handled. Checked in Chrome against a debug server: two TVs signed in by code one after the other, without a reload. The Worker on velio.tv still has the old `vault.js` until it's deployed.
+  - **The `<title>` is stale after a form post that answers another page:** `/account` after signing in keeps the sign-in page's title, and `/lists` after adding a list keeps "Add a list". These answers are fragments for `#main` with `HX-Push-Url`, as on the Worker, and have no `<title>`. HTMX 4.0.1 sets `document.title` only from a `<title>` in a `<head>` in the response, which it takes out before swapping. **Fixed in the Rust server, 2026-11-14:**
+    - `web::page_fragment` puts the page's title in a `<head>` ahead of the fragment. `Web::answer` uses it for HTMX, as do the other fragments that are another page: signing in (to `/account` or `/pair`), the list and profile pages after a change, the pairing page after a TV is signed in, and the account deleted.
+    - A unit test checks the markup, and the 76 shared tests still pass.
+    - Checked in Chrome: "Your account" after signing in, "Lists" after adding a list, "Account deleted" after deleting it, with one `<title>` on the page each time.
+    - The Worker is left as it was.
+  - **A closed account can't be told it's closed.** `/prelogin` gives it a made-up salt, so signing in says the email and password don't match, and the "This account is closed." answer can't be reached from the browser. This keeps a closed account from being revealed.
+  - **A TV's token works again after its account is reopened.** Closing refuses TVs, and their rows go only in the purge. A real TV forgets its token on the 401, so the email's "TVs have to be signed in again" holds in practice.
+  - **Closing from an account found through a notice fills in that notice,** so closing an account again overwrote the reason recorded on the already-actioned notice.
+  - A password change sends the TVs no "rev N". Nothing they hold changes, so none is needed.
+
+Phase 0's certificate question stays closed for velio.tv: behind the tunnel, TVs meet Cloudflare's edge and certificates, as they did the Worker's. Still run the `sync` probe from the test TV through the tunnel, to check the probe headers and the WebSocket.
+
+**R6, the repo half, 2026-11-14.** The root `Dockerfile` builds the client with pnpm (`node:26-slim`), the server on `rust:1.99-alpine` (musl, so the binary is static), and copies the binary into `gcr.io/distroless/static-debian13:nonroot` with `/data` as a volume. `.dockerignore` lets in only the sources it needs, so `.dev.vars` and `PRIVATE.md` never reach a build. In the server: `backup.rs` (the nightly copy, pruning, and the S3 upload, its signing checked against AWS's documented example), `VELIO_TRUSTED_PROXY` as ranges (a proxy container's address isn't fixed), `/healthz` and `velio-server health`, and `/privacy` and `/security` built from the settings. The tests and the stand-in stay in `apps/sync/test` until `apps/sync` is deleted, as do the client sources the image builds from.
 
 ## Open choices
 

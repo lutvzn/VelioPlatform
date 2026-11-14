@@ -1,29 +1,46 @@
 // What an account holds (PLAN.md, "Lists and the manifest"): lists, which
-// are VelioTV's Source with a revision; profiles; and the manifest that says
+// are VelioTV's Source with a revision, or a Stremio add-on's address;
+// profiles; and the manifest that says
 // which profile has which list, at which revision, signed by the owner.
 //
 // Lists and profiles are only ever stored encrypted. The manifest is signed
 // but not encrypted: it holds ids and numbers, which the server can count
-// anyway.
+// anyway, and each TV's name, sealed under the account key.
 
 import nacl from "tweetnacl";
 import { toBase64 } from "./bytes.ts";
-import { array, count, id, optionalText, ReadProblem, record, text } from "./read.ts";
+import type { Sealed } from "./crypto.ts";
+import { array, count, id, optionalText, ReadProblem, record, sealed, text } from "./read.ts";
 
 /** Per account (PLAN.md, "Limits per account"). */
 export const MAX_PROFILES = 8;
 export const MAX_LISTS = 50;
-export const MAX_DEVICES = 10;
+/**
+ * The most TVs any manifest may name: what still fits the manifest's 64,000
+ * characters with 8 profiles and 50 lists (PLAN.md, "TV limits"). Each
+ * account has its own limit up to this: DEFAULT_DEVICE_LIMIT, or what the
+ * operator gave it.
+ */
+export const MAX_DEVICES = 50;
+export const DEFAULT_DEVICE_LIMIT = 10;
 
 export const MAX_NAME_LENGTH = 100;
 export const MAX_URL_LENGTH = 2048;
 export const MAX_GUIDE_URLS = 10;
+/** As VelioTV names itself, such as "Living room TV". */
+export const MAX_DEVICE_NAME_LENGTH = 40;
+/** A TV's sealed name pads to 256 bytes, or 512 for one full of escapes. */
+const MAX_DEVICE_NAME_BOX = 1024;
 
 /** VelioTV's choices (src/data/sources.ts). */
 export const REFRESH_CHOICES = [6, 12, 24, 48, 168];
 export const DEFAULT_REFRESH_HOURS = 24;
 
-export type ListKind = "m3u" | "xtream";
+/** An M3U playlist, an Xtream login, or a Stremio add-on (its manifest's address in `url`). */
+export type ListKind = "m3u" | "xtream" | "stremio";
+
+export const isListKind = (value: unknown): value is ListKind =>
+  value === "m3u" || value === "xtream" || value === "stremio";
 
 /** Encrypted under its list key. VelioTV's Source, plus a format and revision. */
 export interface SyncedList {
@@ -67,7 +84,7 @@ export interface ProfileDraft {
   pin?: string | null;
 }
 
-/** Signed by the owner's signing key; the server reads it, as it holds no secrets. */
+/** Signed by the owner's signing key; the server reads it, as it holds no secrets but the TVs' sealed names. */
 export interface Manifest {
   format: 1;
   account: string;
@@ -80,9 +97,11 @@ export interface Manifest {
   /**
    * TVs, the profiles each was given (Phase 3), and each TV's box public key
    * (Phase 6), so the owner can send it new keys later without trusting the
-   * server for it. TVs signed in before Phase 6 have none.
+   * server for it. TVs signed in before Phase 6 have none. And each TV's
+   * name, sealed under the account key, so only the owner reads it; TVs
+   * signed in before names were sealed have none.
    */
-  devices: { id: string; profiles: string[]; publicKey?: string }[];
+  devices: { id: string; profiles: string[]; publicKey?: string; name?: Sealed }[];
 }
 
 export const emptyManifest = (account: string): Manifest => ({
@@ -94,9 +113,9 @@ export const emptyManifest = (account: string): Manifest => ({
   devices: [],
 });
 
-/** A random id: 16 bytes of URL-safe base64. */
+/** A random id: 16 characters of URL-safe base64. Not replaceAll(), which Chromium 38 lacks. */
 export const newId = () =>
-  toBase64(nacl.randomBytes(12)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  toBase64(nacl.randomBytes(12)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 const noDuplicates = (ids: string[], what: string) => {
   if (new Set(ids).size !== ids.length) throw new ReadProblem(`${what} has an id twice`);
@@ -143,6 +162,8 @@ export const readManifest = (value: unknown): Manifest => {
           throw new ReadProblem("A manifest device's public key isn't 32 bytes of base64");
         entry.publicKey = publicKey;
       }
+      if (device.name !== undefined)
+        entry.name = sealed(device.name, "A manifest device's name", MAX_DEVICE_NAME_BOX);
       return entry;
     }),
   };
@@ -169,7 +190,7 @@ export const readManifest = (value: unknown): Manifest => {
 export const readList = (value: unknown): SyncedList => {
   const item = record(value, "A list");
   if (item.format !== 1) throw new ReadProblem("A list has an unknown format");
-  if (item.kind !== "m3u" && item.kind !== "xtream") throw new ReadProblem("A list has an unknown kind");
+  if (!isListKind(item.kind)) throw new ReadProblem("A list has an unknown kind");
   const read: SyncedList = {
     format: 1,
     id: id(item.id, "A list's id"),
@@ -282,13 +303,37 @@ export const PROFILE_PROBLEM_TEXT: Record<ProfileProblem, string> = {
 
 const isWebUrl = (value: string) => /^https?:\/\/[^\s/]+/i.test(value);
 
-export type ListProblem = "url" | "urlForm" | "server" | "login" | "guideForm" | "tooLong" | "refresh";
+export type ListProblem =
+  | "url"
+  | "urlForm"
+  | "addon"
+  | "addonForm"
+  | "server"
+  | "login"
+  | "guideForm"
+  | "tooLong"
+  | "refresh";
+
+/**
+ * A Stremio add-on's manifest address, as the owner may paste it: an install
+ * link (stremio://…) means https://, and the add-on's own address has
+ * /manifest.json added. Undefined unless it's a web address then.
+ */
+export const addonManifestUrl = (address: string) => {
+  let url = address.trim().replace(/^stremio:\/\//i, "https://");
+  if (!isWebUrl(url)) return undefined;
+  if (!/\/manifest\.json$/i.test(url.split(/[?#]/)[0])) url = `${url.replace(/\/+$/, "")}/manifest.json`;
+  return url;
+};
 
 /** Why a draft can't be saved, as VelioTV's source.problem keys, or undefined. */
 export const listProblem = (draft: ListDraft): ListProblem | undefined => {
   if (draft.kind === "m3u") {
     if (!draft.url) return "url";
     if (!isWebUrl(draft.url)) return "urlForm";
+  } else if (draft.kind === "stremio") {
+    if (!draft.url) return "addon";
+    if (!addonManifestUrl(draft.url)) return "addonForm";
   } else {
     if (!draft.server) return "server";
     if (!draft.username || !draft.password) return "login";
@@ -316,6 +361,8 @@ export const listProblem = (draft: ListDraft): ListProblem | undefined => {
 export const LIST_PROBLEM_TEXT: Record<ListProblem, string> = {
   url: "Enter the playlist's address.",
   urlForm: "The playlist's address must start with http:// or https://.",
+  addon: "Enter the add-on's address.",
+  addonForm: "The add-on's address must start with https://, http:// or stremio://.",
   server: "Enter the server's address.",
   login: "Enter the username and password.",
   guideForm: "Each guide address must start with http:// or https://.",
@@ -325,7 +372,7 @@ export const LIST_PROBLEM_TEXT: Record<ListProblem, string> = {
 
 /** A name for a list the owner didn't name: its server's host name, as VelioTV does. */
 export const defaultListName = (draft: ListDraft) => {
-  const address = draft.kind === "m3u" ? draft.url : draft.server;
+  const address = draft.kind === "xtream" ? draft.server : draft.url;
   if (!address) return "";
   try {
     return new URL(/^[a-z]+:\/\//i.test(address) ? address : `http://${address}`).hostname;

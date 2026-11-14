@@ -10,6 +10,7 @@
 //   node scripts/ops.mjs close <email or id> "<reason the owner reads>" [--notice <id>] [--confirm <email>]
 //     (without --confirm, it shows the account and asks for its email to be typed)
 //   node scripts/ops.mjs reopen <email or id>
+//   node scripts/ops.mjs tv-limit <email or id> <number|default>   (the Rust server only)
 
 import { createInterface } from "node:readline/promises";
 
@@ -26,6 +27,7 @@ const usage = () => {
       "node scripts/ops.mjs account <email or id>",
       'node scripts/ops.mjs close <email or id> "<reason the owner reads>" [--notice <id>] [--confirm <email>]',
       "node scripts/ops.mjs reopen <email or id>",
+      "node scripts/ops.mjs tv-limit <email or id> <number|default>",
     ].join("\n"),
   );
   process.exit(2);
@@ -117,6 +119,16 @@ switch (command) {
     if (!rest[0]) usage();
     await call("POST", `/accounts/${await accountId(rest[0])}/reopen`);
     console.log(`Opened ${rest[0]} again; the owner was emailed.`);
+    break;
+  }
+  case "tv-limit": {
+    if (rest.length < 2 || !(rest[1] === "default" || /^\d+$/.test(rest[1]))) usage();
+    const limit = rest[1] === "default" ? null : Number(rest[1]);
+    const { account } = await call("POST", `/accounts/${await accountId(rest[0])}/tv-limit`, { limit });
+    const { allowed } = account.tv_limits;
+    console.log(
+      `${account.email} can have ${allowed} TVs${account.tv_limit === null ? " (the default)" : ""}; it has ${account.devices}.`,
+    );
     break;
   }
   default:

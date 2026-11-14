@@ -15,6 +15,7 @@ import {
 import { isRecord, openJson, signJson, unwrapKey } from "../src/crypto.ts";
 import { newOwnerKeys, type OwnerKeys } from "../src/owner.ts";
 import {
+  addonManifestUrl,
   defaultListName,
   emptyManifest,
   listProblem,
@@ -40,6 +41,14 @@ const XTREAM: ListDraft = {
   username: "someone",
   password: "hunter2-but-longer",
   refreshHours: 12,
+};
+
+const ADDON: ListDraft = {
+  name: "",
+  kind: "stremio",
+  url: "stremio://addon.example.invalid/films",
+  guideUrls: ["http://addon.example.invalid/guide.xml"],
+  refreshHours: 24,
 };
 
 /** A server and one owner device, talking only through changes and stored state. */
@@ -136,6 +145,17 @@ describe("an account's lists and profiles", () => {
     expect(stillThere.profileKeys.map(entry => entry.profile)).toEqual([living]);
     // A TV of the Kids profile kept the old key: it opens no new version.
     expect(() => openJson(keptByKidsTv, stillThere.sealed)).toThrow(/Couldn't decrypt/);
+  });
+
+  it("keep a Stremio add-on by its manifest's address, with no guide", () => {
+    const { save, living } = withTwoProfiles();
+    const state = save(before => withList(before, ADDON, [living]).state);
+    expect(state.lists[0].record).toMatchObject({
+      kind: "stremio",
+      name: "addon.example.invalid",
+      url: "https://addon.example.invalid/films/manifest.json",
+    });
+    expect(state.lists[0].record.guideUrls).toBeUndefined();
   });
 
   it("give a list's new key a new revision when only its profiles change", () => {
@@ -336,6 +356,22 @@ describe("list checks", () => {
     expect(listProblem({ ...M3U, guideUrls: ["guide.xml"] })).toBe("guideForm");
     expect(listProblem({ ...M3U, name: "x".repeat(101) })).toBe("tooLong");
     expect(listProblem({ ...M3U, refreshHours: 5 })).toBe("refresh");
+    expect(listProblem(ADDON)).toBeUndefined();
+    expect(listProblem({ ...ADDON, url: "" })).toBe("addon");
+    expect(listProblem({ ...ADDON, url: "addon.example.invalid" })).toBe("addonForm");
+  });
+
+  it("find a Stremio add-on's manifest from what the owner pastes", () => {
+    expect(addonManifestUrl("stremio://addon.example.invalid/manifest.json")).toBe(
+      "https://addon.example.invalid/manifest.json",
+    );
+    expect(addonManifestUrl(" https://addon.example.invalid/config/ ")).toBe(
+      "https://addon.example.invalid/config/manifest.json",
+    );
+    expect(addonManifestUrl("http://10.0.0.1:8090/stremio/manifest.json?x=1")).toBe(
+      "http://10.0.0.1:8090/stremio/manifest.json?x=1",
+    );
+    expect(addonManifestUrl("ftp://addon.example.invalid")).toBeUndefined();
   });
 
   it("name an unnamed list after its host", () => {
@@ -348,6 +384,9 @@ describe("list checks", () => {
   it("read lists loosely, keeping what fits", () => {
     expect(() => readList({ format: 1, id: "a", rev: 1, name: "x", kind: "rtsp", refreshHours: 24 })).toThrow(
       /kind/,
+    );
+    expect(readList({ format: 1, id: "a", rev: 1, name: "x", kind: "stremio", refreshHours: 24 }).kind).toBe(
+      "stremio",
     );
     expect(
       readList({ format: 1, id: "a", rev: 1, name: "x", kind: "m3u", refreshHours: 24, disabled: false }),

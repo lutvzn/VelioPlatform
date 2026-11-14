@@ -38,7 +38,6 @@ export const refusalText = (result: Exclude<ChangeResult, { ok: true }>) => {
 
 export interface DeviceRow {
   id: string;
-  name: string;
   created_at: number;
   last_pulled_at: number | null;
   /** Set when the TV signed itself out (POST /v1/signout); it stays in the manifest until removed. */
@@ -68,7 +67,7 @@ export const devicesOf = async (db: D1Database, accountId: string) =>
   (
     await db
       .prepare(
-        "SELECT id, name, created_at, last_pulled_at, signed_out_at FROM devices WHERE account_id = ? ORDER BY created_at",
+        "SELECT id, created_at, last_pulled_at, signed_out_at FROM devices WHERE account_id = ? ORDER BY created_at",
       )
       .bind(accountId)
       .all<DeviceRow>()

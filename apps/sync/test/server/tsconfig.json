@@ -1,0 +1,9 @@
+{
+  // Node, not Workers: the stand-in runs in vitest's Node process.
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "include": [".", "../../vitest.server.config.ts"]
+}

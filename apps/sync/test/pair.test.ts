@@ -51,7 +51,9 @@ describe("signing in a TV", () => {
 
     const signedIn = await signInTv(browser, tv, [ids[0], ids[1]]);
     expect(signedIn.status).toBe(200);
-    expect(await signedIn.text()).toContain("Living room TV</strong> is signed in");
+    const done = await signedIn.text();
+    expect(done).toMatch(/<strong><span data-tv-name="[^"]+">…<\/span><\/strong> is signed in/);
+    expect(done).not.toContain("Living room TV");
 
     const { trust, token } = await pickUp(tv);
     const first = await pull(tv, token);
@@ -91,12 +93,16 @@ describe("signing in a TV", () => {
     expect(names(view)).toEqual(["Guest list"]);
   });
 
-  it("shows the TV on the account page", async () => {
+  it("keeps the TV's name sealed for the owner: the server shows only how many TVs there are", async () => {
     const { browser, ids } = await threeProfiles();
     const tv = await newTv("Kitchen TV");
     await signInTv(browser, tv, [ids[0]]);
-    const page = await request(browser.visitor, "/account");
-    expect(await page.text()).toContain("Kitchen TV");
+    const account = await (await request(browser.visitor, "/account")).text();
+    expect(account).toContain("You have 1 TV.");
+    const { html, state } = await openPage(browser, "/devices");
+    expect(state.devices.map(device => device.name)).toEqual(["Kitchen TV"]);
+    expect(html).not.toContain("Kitchen TV");
+    expect(account).not.toContain("Kitchen TV");
   });
 });
 
@@ -136,7 +142,11 @@ describe("pairing", () => {
     await save(browser, next => withProfile(next, { name: "Another" }).state);
     const stale = await post(browser.visitor, `/pair/${code.id}`, {
       change: JSON.stringify(
-        buildChange(browser.owner, state, withDevice(state, deviceId, fromBase64(tv.publicKey), [ids[0]])),
+        buildChange(
+          browser.owner,
+          state,
+          withDevice(state, deviceId, fromBase64(tv.publicKey), [ids[0]], "TV"),
+        ),
       ),
       payload: JSON.stringify({ nonce: "x", box: "y" }),
       kind: code.kind,
@@ -150,7 +160,7 @@ describe("pairing", () => {
   it("refuses a TV added through /changes, without signing it in", async () => {
     const { browser, ids } = await threeProfiles();
     const { state } = await openPage(browser);
-    const sneaky = withDevice(state, "made-up-device", boxKeys().publicKey, [ids[0]]);
+    const sneaky = withDevice(state, "made-up-device", boxKeys().publicKey, [ids[0]], "TV");
     expect((await send(browser, buildChange(browser.owner, state, sneaky))).status).toBe(400);
   });
 
@@ -179,8 +189,8 @@ describe("pairing", () => {
     });
     expect((await start(good)).status).toBe(201);
     expect((await start({ ...good, publicKey: "nope" })).status).toBe(400);
-    expect((await start({ ...good, name: "" })).status).toBe(400);
-    expect((await start({ ...good, name: "x".repeat(41) })).status).toBe(400);
+    // Old VelioTV builds also send the name in plain text: it's ignored.
+    expect((await start({ ...good, name: "x".repeat(41) })).status).toBe(201);
     expect((await start({ ...good, proofs: undefined })).status).toBe(400);
     expect((await start({ ...good, sealed: { qr: good.sealed.qr } })).status).toBe(400);
     // A wrong poll token looks like no pairing.
@@ -307,7 +317,7 @@ describe("the TVs page", () => {
     const page = await request(browser.visitor, "/devices");
     expect(page.status).toBe(200);
     const html = await page.text();
-    expect(html).toContain("Living room TV");
+    expect(html).toContain(`<span data-tv-name="${trust.device}">…</span>`);
     expect(html).toContain(`data-velio="device-profiles" data-device-id="${trust.device}"`);
     expect(html).toContain('data-velio="device-remove"');
   });
@@ -358,9 +368,8 @@ describe("the TVs page", () => {
     const row = await env.DB.prepare("SELECT id FROM devices WHERE id = ?").bind(trust.device).first();
     expect(row).toBeNull();
 
-    const page = await (await request(browser.visitor, "/devices")).text();
-    expect(page).not.toContain("Living room TV");
-    expect(page).toContain("Kids TV");
+    const { state } = await openPage(browser, "/devices");
+    expect(state.devices.map(device => device.name)).toEqual(["Kids TV"]);
     const secondAfter = openPull(
       second.trust,
       await (await pull(second.tv, second.token)).json(),

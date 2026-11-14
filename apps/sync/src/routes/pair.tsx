@@ -28,7 +28,6 @@ const GONE =
 interface PairingRow {
   device_id: string;
   public_key: string;
-  name: string;
   sealed_device: string;
   proof_qr_hash: string;
   proof_code_hash: string;
@@ -45,7 +44,7 @@ const isKind = (kind: string): kind is PairingKind => kind === "qr" || kind === 
 const waitingPairing = async (c: AppContext, id: string, kind: string, proof: string) => {
   if (!PAIRING_ID_PATTERN.test(id) || !isKind(kind) || proof === "") return null;
   const row = await c.env.DB.prepare(
-    `SELECT device_id, public_key, name, sealed_device, proof_qr_hash, proof_code_hash, expires_at, completed_at
+    `SELECT device_id, public_key, sealed_device, proof_qr_hash, proof_code_hash, expires_at, completed_at
      FROM pairings WHERE id = ?`,
   )
     .bind(id)
@@ -60,10 +59,10 @@ const waitingPairing = async (c: AppContext, id: string, kind: string, proof: st
  * The pairing page for a signed-in owner: the whole page for GET (boosted
  * links swap the body), or #main for a form's answer.
  */
-const pairPage = async (c: AppContext, session: Session, signedInName?: string) => {
+const pairPage = async (c: AppContext, session: Session, signedInTv?: string) => {
   const props = await vaultProps(c, session);
   if (!props) return problem(c, NO_KEYS, 500);
-  const page = <PairPage {...props} signedInName={signedInName} />;
+  const page = <PairPage {...props} signedIn={signedInTv} />;
   return c.req.method === "POST" && isHtmx(c) ? c.html(page) : fullPage(c, PAIR_TITLE, page);
 };
 
@@ -156,8 +155,8 @@ pair.post("/pair/:id", async c => {
   const deviceToken = newToken();
   await c.env.DB.batch([
     c.env.DB.prepare(
-      "INSERT INTO devices (id, account_id, name, public_key, token_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-    ).bind(row.device_id, session.accountId, row.name, row.public_key, await sha256Hex(deviceToken), now),
+      "INSERT INTO devices (id, account_id, public_key, token_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind(row.device_id, session.accountId, row.public_key, await sha256Hex(deviceToken), now),
     c.env.DB.prepare("UPDATE pairings SET kind = ?, payload = ?, device_token = ? WHERE id = ?").bind(
       kind,
       JSON.stringify(payload),
@@ -165,5 +164,5 @@ pair.post("/pair/:id", async c => {
       id,
     ),
   ]);
-  return pairPage(c, session, row.name);
+  return pairPage(c, session, row.device_id);
 });

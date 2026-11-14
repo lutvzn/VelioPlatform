@@ -7,9 +7,9 @@ import { fromBase64, toBase64 } from "../src/bytes.ts";
 import {
   applyChange,
   buildChange,
-  ChangeProblem,
   openState,
   readStoredState,
+  storedManifest,
   withDevice,
   withDeviceProfiles,
   withList,
@@ -34,7 +34,15 @@ import {
   sealDeviceInfo,
   sealPairingPayload,
 } from "../src/pairing.ts";
-import { MAX_DEVICES, newId, type ListDraft } from "../src/records.ts";
+import {
+  DEFAULT_DEVICE_LIMIT,
+  MAX_DEVICE_NAME_LENGTH,
+  MAX_DEVICES,
+  MAX_LISTS,
+  MAX_PROFILES,
+  newId,
+  type ListDraft,
+} from "../src/records.ts";
 
 const ACCOUNT = "account-1";
 const SITE = "https://velio.tv";
@@ -89,16 +97,26 @@ const newTv = (name = "Living room TV") => {
 type Tv = ReturnType<typeof newTv>;
 
 /** The phone's side: reads the code, opens the TV's details, gives it profiles, and answers the TV. */
-const signIn = (account: ReturnType<typeof setup>, tv: Tv, profiles: string[], typed = false) => {
+const signIn = (
+  account: ReturnType<typeof setup>,
+  tv: Tv,
+  profiles: string[],
+  typed = false,
+  deviceLimit?: number,
+) => {
   const code = readPairingCode(
     typed ? pairingCode(tv.pairingId, tv.secrets) : pairingUrl(SITE, tv.pairingId, tv.secrets),
   );
   if (!code) throw new Error("The code didn't read");
   const info = openDeviceInfo(code, tv.sealed);
   const deviceId = newId();
-  account.save(state => withDevice(state, deviceId, fromBase64(info.publicKey), profiles), {
-    newDevices: [deviceId],
-  });
+  account.save(
+    state => withDevice(state, deviceId, fromBase64(info.publicKey), profiles, info.name, deviceLimit),
+    {
+      newDevices: [deviceId],
+      deviceLimit,
+    },
+  );
   const publicKeys = ownerPublicKeys(account.owner);
   const sealed = sealPairingPayload(code, {
     format: 1,
@@ -164,8 +182,33 @@ describe("signing in a TV", () => {
     const sent = JSON.stringify(pull(account, deviceId));
     expect(sent).not.toContain(account.profiles[2]);
     expect(account.open().devices).toEqual([
-      { id: deviceId, profiles: [living, kids], publicKey: tv.keys.publicKey },
+      { id: deviceId, profiles: [living, kids], publicKey: tv.keys.publicKey, name: "Living room TV" },
     ]);
+  });
+
+  it("keeps the TV's name only sealed under the account key, out of what the server and the TV read", () => {
+    const account = setup();
+    const { deviceId } = signIn(account, newTv(), [account.profiles[0]]);
+    const stored = account.stored();
+    expect(JSON.stringify(stored)).not.toContain("Living room TV");
+    const [entry] = storedManifest(stored, ACCOUNT).devices;
+    expect(entry.id).toBe(deviceId);
+    expect(entry.name).toMatchObject({ nonce: expect.any(String), box: expect.any(String) });
+    expect(JSON.stringify(pull(account, deviceId))).not.toContain("Living room TV");
+    // Sealed again on each change, so the server can't tell when it changed.
+    account.save(state => withProfile(state, { name: "Another" }).state);
+    const [after] = storedManifest(account.stored(), ACCOUNT).devices;
+    expect(after.name?.box).not.toBe(entry.name?.box);
+    expect(account.open().devices[0].name).toBe("Living room TV");
+  });
+
+  it("signs in a TV that sent no name, and refuses one too long", () => {
+    const account = setup();
+    const { deviceId } = signIn(account, newTv("  "), [account.profiles[0]]);
+    expect(account.open().devices.find(device => device.id === deviceId)?.name).toBeUndefined();
+    expect(() =>
+      withDevice(account.open(), "d", newTv().keys.publicKey, [account.profiles[0]], "x".repeat(41)),
+    ).toThrow(/too long/);
   });
 
   it("works with the typed code too", () => {
@@ -202,22 +245,112 @@ describe("signing in a TV", () => {
     const account = setup();
     const tv = newTv();
     expect(() =>
-      account.save(state => withDevice(state, "made-up", tv.keys.publicKey, [account.profiles[0]])),
+      account.save(state => withDevice(state, "made-up", tv.keys.publicKey, [account.profiles[0]], "TV")),
     ).toThrow(/signing it in/);
   });
 
-  it("stops at the limit of TVs", () => {
+  it("stops at the account's limit of TVs", () => {
     const account = setup();
-    for (let i = 0; i < MAX_DEVICES; i++) signIn(account, newTv(`TV ${i}`), [account.profiles[0]]);
+    for (let i = 0; i < DEFAULT_DEVICE_LIMIT; i++) signIn(account, newTv(`TV ${i}`), [account.profiles[0]]);
     const state = account.open();
-    expect(() => withDevice(state, "one-more", newTv().keys.publicKey, [account.profiles[0]])).toThrow(
-      ChangeProblem,
+    expect(() => withDevice(state, "one-more", newTv().keys.publicKey, [account.profiles[0]], "TV")).toThrow(
+      `at most ${DEFAULT_DEVICE_LIMIT} TVs`,
     );
+  });
+
+  it("takes more TVs when the operator gave the account more, up to MAX_DEVICES", () => {
+    const account = setup();
+    const given = DEFAULT_DEVICE_LIMIT + 2;
+    let last: ReturnType<typeof signIn> | undefined;
+    for (let i = 0; i < given; i++)
+      last = signIn(account, newTv(`TV ${i}`), [account.profiles[0]], false, given);
+    expect(account.open().devices).toHaveLength(given);
+    // And the TV takes a manifest naming more than the default.
+    if (!last) throw new Error("No TV signed in");
+    expect(openPull(last.trust, pull(account, last.deviceId)).rev).toBeGreaterThan(0);
+    expect(() =>
+      withDevice(account.open(), "one-more", newTv().keys.publicKey, [account.profiles[0]], "TV", given),
+    ).toThrow(`at most ${given} TVs`);
+    expect(() =>
+      withDevice(account.open(), "one-more", newTv().keys.publicKey, [account.profiles[0]], "TV", 1000),
+    ).not.toThrow();
+  });
+
+  it("fits MAX_DEVICES TVs with every profile in the manifest, at the most profiles and lists", () => {
+    const owner = newOwnerKeys();
+    let state = openState(
+      owner,
+      ACCOUNT,
+      readStoredState({ manifest: null, profiles: [], lists: [], devices: [] }),
+    );
+    const profiles: string[] = [];
+    for (let p = 0; p < MAX_PROFILES; p++) {
+      const made = withProfile(state, { name: `Profile ${p}` });
+      profiles.push(made.profileId);
+      state = made.state;
+    }
+    for (let l = 0; l < MAX_LISTS; l++) state = withList(state, list(`List ${l}`), profiles).state;
+    for (let d = 0; d < MAX_DEVICES; d++)
+      state = withDevice(
+        state,
+        newId(),
+        newTv().keys.publicKey,
+        profiles,
+        "x".repeat(MAX_DEVICE_NAME_LENGTH),
+        MAX_DEVICES,
+      );
+    const before = openState(
+      owner,
+      ACCOUNT,
+      readStoredState({ manifest: null, profiles: [], lists: [], devices: [] }),
+    );
+    const change = roundTrip(buildChange(owner, before, state));
+    const newDevices = state.devices.map(device => device.id);
+    const applied = applyChange(
+      { manifest: null, profiles: [], lists: [], devices: [] },
+      change,
+      ACCOUNT,
+      owner.signing.publicKey,
+      { newDevices, deviceLimit: MAX_DEVICES },
+    );
+    expect(applied.manifest.devices).toHaveLength(MAX_DEVICES);
+  });
+
+  it("refuses, on the server, a TV past the account's limit", () => {
+    const account = setup();
+    signIn(account, newTv("One"), [account.profiles[0]]);
+    expect(() => signIn(account, newTv("Two"), [account.profiles[0]], false, 1)).toThrow(/at most 1 TV\b/);
+    // A browser told a higher limit than the server's still gets refused.
+    const deviceId = newId();
+    expect(() =>
+      account.save(
+        state => withDevice(state, deviceId, newTv().keys.publicKey, [account.profiles[0]], "TV", 5),
+        { newDevices: [deviceId], deviceLimit: 1 },
+      ),
+    ).toThrow("At most 1 TV");
+    expect(() =>
+      account.save(
+        state => withDevice(state, deviceId, newTv().keys.publicKey, [account.profiles[0]], "TV", 1000),
+        { newDevices: [deviceId], deviceLimit: 1000 },
+      ),
+    ).not.toThrow();
+  });
+
+  it("keeps working for an account given fewer TVs than it has", () => {
+    const account = setup();
+    for (const name of ["One", "Two", "Three"]) signIn(account, newTv(name), [account.profiles[0]]);
+    account.save(state => withList(state, list("Another"), [account.profiles[0]]).state, { deviceLimit: 2 });
+    const tv = account.open().devices[0];
+    account.save(state => withoutDevice(state, tv.id), { deviceLimit: 2 });
+    expect(account.open().devices).toHaveLength(2);
+    expect(() => signIn(account, newTv("Four"), [account.profiles[0]], false, 2)).toThrow(/at most 2 TVs/);
   });
 
   it("needs at least one profile", () => {
     const account = setup();
-    expect(() => withDevice(account.open(), "d", newTv().keys.publicKey, [])).toThrow(/at least one profile/);
+    expect(() => withDevice(account.open(), "d", newTv().keys.publicKey, [], "TV")).toThrow(
+      /at least one profile/,
+    );
   });
 });
 

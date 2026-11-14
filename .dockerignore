@@ -1,0 +1,16 @@
+# Only what the image is built from. Everything else stays out, above all
+# .dev.vars, PRIVATE.md and local databases.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!apps/sync/package.json
+!apps/sync/scripts/build-client.mjs
+!apps/sync/src/client
+!apps/sync/src/probe/test-account.json
+!packages/sync-core/package.json
+!packages/sync-core/src
+!apps/server/Cargo.toml
+!apps/server/Cargo.lock
+!apps/server/src
+!apps/server/migrations

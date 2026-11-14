@@ -429,10 +429,17 @@ const nameProblem = (name: string) => {
 
 const readDraft = (form: HTMLFormElement): ListDraft => {
   const field = (name: string) => valueOf(form, `[data-field="${name}"]`).trim();
-  const kind = field("kind") === "xtream" ? "xtream" : "m3u";
+  const chosen = field("kind");
+  const kind = chosen === "xtream" || chosen === "stremio" ? chosen : "m3u";
   const draft: ListDraft = { name: field("name"), kind, refreshHours: Number(field("refreshHours")) };
   if (kind === "m3u") draft.url = field("url");
-  else {
+  else if (kind === "stremio") {
+    draft.url = field("addonUrl");
+    // An add-on has no guide, whatever the hidden field holds.
+    return form.querySelector<HTMLInputElement>('[data-field="disabled"]')?.checked
+      ? { ...draft, disabled: true }
+      : draft;
+  } else {
     draft.server = field("server");
     draft.username = field("username");
     draft.password = field("password");
@@ -594,7 +601,16 @@ const sendPairing = (detail: ConfirmDetail, body: Body) => {
     return;
   }
   try {
-    const after = withDevice(opened, deviceId, fromBase64(pairDevice.publicKey), chosenProfiles(form));
+    // The account's TV limit, from the server (the Worker's pages don't say: the default).
+    const tvLimit = Number(form.dataset.tvLimit) || undefined;
+    const after = withDevice(
+      opened,
+      deviceId,
+      fromBase64(pairDevice.publicKey),
+      chosenProfiles(form),
+      pairDevice.name,
+      tvLimit,
+    );
     body.set("change", JSON.stringify(buildChange(owner, opened, after)));
     const payload = sealPairingPayload(pairCode, {
       format: 1,
@@ -618,8 +634,11 @@ const sendPairing = (detail: ConfirmDetail, body: Body) => {
 
 /** Opens the found TV's details with the code, and fills in the code from a QR code once the keys are open. */
 const showPairing = () => {
-  // Signed in: the code did its job.
-  if (document.querySelector("#main .done[role=status]")) {
+  // Signed in: the code did its job. Once per TV signed in, as finding the
+  // next TV swaps only #pair-step, and this status stays on the page.
+  const done = document.querySelector<HTMLElement>("#main .done[role=status]:not([data-seen])");
+  if (done) {
+    done.dataset.seen = "yes";
     storage.set(null);
     pairCode = null;
     pairDevice = null;
@@ -678,7 +697,7 @@ document.addEventListener("htmx:confirm", event => {
 
 // --- Showing pages ---
 
-const KIND_TEXT = { m3u: "M3U playlist", xtream: "Xtream login" };
+const KIND_TEXT = { m3u: "M3U playlist", xtream: "Xtream login", stremio: "Stremio add-on" };
 
 const hostOf = (address: string | undefined) => {
   if (!address) return "";
@@ -692,7 +711,7 @@ const hostOf = (address: string | undefined) => {
 /** What a list is, without its address's path or query, which can hold a login. */
 const summaryOf = (list: OpenedList) => {
   const { record } = list;
-  const parts = [KIND_TEXT[record.kind], hostOf(record.kind === "m3u" ? record.url : record.server)];
+  const parts = [KIND_TEXT[record.kind], hostOf(record.kind === "xtream" ? record.server : record.url)];
   if (record.disabled) parts.push("turned off");
   return parts.filter(Boolean).join(" · ");
 };
@@ -708,6 +727,8 @@ const showKind = (form: HTMLFormElement) => {
   const kind = valueOf(form, '[data-field="kind"]');
   for (const fieldset of form.querySelectorAll<HTMLElement>("[data-kind-only]"))
     fieldset.hidden = fieldset.dataset.kindOnly !== kind;
+  for (const fieldset of form.querySelectorAll<HTMLElement>("[data-kind-not]"))
+    fieldset.hidden = fieldset.dataset.kindNot === kind;
 };
 
 /** Fills a form once, so a problem shown after sending doesn't undo what was typed. */
@@ -729,6 +750,8 @@ const fill = (state: OpenedState) => {
   );
   fillText("data-list-name", new Map(state.lists.map(list => [list.record.id, list.record.name])));
   fillText("data-list-summary", new Map(state.lists.map(list => [list.record.id, summaryOf(list)])));
+  // A TV from before names were sealed has none.
+  fillText("data-tv-name", new Map(state.devices.map(device => [device.id, device.name ?? "TV"])));
 
   drawProfilePictures(state);
   for (const form of document.querySelectorAll<HTMLFormElement>('form[data-velio="profile-edit"]')) {
@@ -752,7 +775,8 @@ const fill = (state: OpenedState) => {
     fillOnce(listForm, set => {
       set("kind", record.kind);
       set("name", record.name);
-      set("url", record.url ?? "");
+      set("url", record.kind === "m3u" ? (record.url ?? "") : "");
+      set("addonUrl", record.kind === "stremio" ? (record.url ?? "") : "");
       set("server", record.server ?? "");
       set("username", record.username ?? "");
       set("password", record.password ?? "");

@@ -7,7 +7,8 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "lint": "oxlint",
-    "check": "oxfmt --check && oxlint --deny-warnings && pnpm -r run tsc && pnpm -r run test"
+    "check": "oxfmt --check && oxlint --deny-warnings && pnpm -r run tsc && pnpm -r run test && pnpm check:server",
+    "check:server": "cd apps/server && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --quiet && cd ../sync && pnpm test:server"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

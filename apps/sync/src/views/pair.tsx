@@ -3,16 +3,20 @@
 // the server), finds the TV with the pairing id and a proof of the secret,
 // opens its sealed name and key, and sends the signed change that adds it.
 
-import { Name, ProfilePic, VaultPage, type VaultPageProps } from "./vault.tsx";
+import { Name, ProfilePic, TvName, VaultPage, type VaultPageProps } from "./vault.tsx";
 
 export const PAIR_TITLE = "Sign in a TV";
 
 /** The pairing page: type the TV's code, or come from its QR code with the code already filled in. */
-export const PairPage = (props: VaultPageProps & { signedInName?: string }) => (
+/** `signedIn` is the TV just signed in, whose name vault.js fills in. */
+export const PairPage = (props: VaultPageProps & { signedIn?: string }) => (
   <VaultPage {...props} title={PAIR_TITLE}>
-    {props.signedInName !== undefined ? (
+    {props.signedIn !== undefined ? (
       <p class="done" role="status">
-        <strong>{props.signedInName}</strong> is signed in. It loads your lists in a few seconds.
+        <strong>
+          <TvName id={props.signedIn} />
+        </strong>{" "}
+        is signed in. It loads your lists in a few seconds.
       </p>
     ) : null}
     <p class="note">

@@ -3,7 +3,7 @@
 // something, not that it has the right shape, so everything is read field
 // by field. Each throws a ReadProblem naming what didn't fit.
 
-import { isRecord } from "./crypto.ts";
+import { isRecord, type Sealed } from "./crypto.ts";
 
 export class ReadProblem extends Error {
   constructor(message: string) {
@@ -45,4 +45,16 @@ export const id = (value: unknown, what: string) => {
   const read = text(value, what, 40);
   if (!ID_PATTERN.test(read)) throw new ReadProblem(`${what} isn't an id`);
   return read;
+};
+
+/** Base64 of 24 bytes. */
+const NONCE_LENGTH = 32;
+
+/** A secretbox or box, at most `maxBox` characters of base64; whether it opens is for open() to say. */
+export const sealed = (value: unknown, what: string, maxBox: number): Sealed => {
+  const item = record(value, what);
+  const nonce = text(item.nonce, `${what}'s nonce`, NONCE_LENGTH);
+  const box = text(item.box, `${what}'s box`, maxBox);
+  if (nonce.length !== NONCE_LENGTH) throw new ReadProblem(`${what}'s nonce is the wrong size`);
+  return { nonce, box };
 };

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .wrangler/
+# The Rust server's build
+target/
 .dev.vars
 .DS_Store
 

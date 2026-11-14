@@ -141,7 +141,7 @@ export const signInTv = async (browser: Browser, tv: Tv, profileIds: string[], k
   const info = openDeviceInfo(code, JSON.parse(attribute(html, "data-sealed-device")));
   expect(info.publicKey).toBe(tv.publicKey);
   const { state } = await openPage(browser, "/pair");
-  const after = withDevice(state, deviceId, fromBase64(info.publicKey), profileIds);
+  const after = withDevice(state, deviceId, fromBase64(info.publicKey), profileIds, info.name);
   const payload = sealPairingPayload(code, {
     format: 1,
     account: browser.accountId,

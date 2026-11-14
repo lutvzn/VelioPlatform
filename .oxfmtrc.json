@@ -13,6 +13,7 @@
     ".env",
     ".wrangler",
     "worker-configuration.d.ts",
-    "pnpm-lock.yaml"
+    "pnpm-lock.yaml",
+    "apps/server/tests/vectors.json"
   ]
 }
