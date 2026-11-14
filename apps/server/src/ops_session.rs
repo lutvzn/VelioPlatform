@@ -18,7 +18,7 @@ pub const OPS_SESSION_MS: i64 = 8 * HOUR_MS;
 
 /// Whether a token is the OPS_TOKEN secret, compared as SHA-256 digests in constant time.
 pub fn is_ops_token(secret: &str, token: &str) -> bool {
-    same_digest(&sha256_hex(token), &sha256_hex(secret))
+    same_digest(sha256_hex(token), sha256_hex(secret))
 }
 
 fn mac(secret: &str, message: &str) -> String {
@@ -55,7 +55,7 @@ pub fn valid_ops_session(secret: &str, value: &str, now: i64) -> bool {
     if expires_at <= now || expires_at > now + OPS_SESSION_MS {
         return false;
     }
-    same_digest(given, &mac(secret, &format!("{expires}.{nonce}")))
+    same_digest(given, mac(secret, &format!("{expires}.{nonce}")))
 }
 
 pub fn has_ops_session(secret: &str, headers: &HeaderMap, now: i64) -> bool {

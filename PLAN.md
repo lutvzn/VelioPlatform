@@ -671,6 +671,8 @@ Every `vault_` table references `accounts` with `ON DELETE CASCADE`, and `PRAGMA
 
 Migrations live in `apps/server/migrations/` and run at startup, in order, recorded in `PRAGMA user_version`.
 
+Kept small (`0004_less_storage.sql`, `src/packed.rs`). Ciphertext is stored as its bytes rather than as base64 in JSON: a sealed value is the byte 1, the nonce and the box, and a signed manifest is the byte 2, the signature and the body. Anything that wouldn't read back exactly stays as JSON text. SHA-256 hashes are stored as 32 bytes instead of 64 hex characters. The small key tables (`vault_list_keys`, `vault_devices`, `vault_device_keys`) have no rowid, so their key is stored once. Auto-vacuum is incremental, and the clean-up gives freed pages back to the disk. The write-ahead log keeps at most 4 MiB between checkpoints. On 2,000 made-up accounts in the old format, the file went from 141 MB to 95 MB, and the API and sync-core see the same JSON as before.
+
 ### Configuration
 
 Environment variables (`--env-file` for the container). README.md lists them for operators:

@@ -26,7 +26,7 @@ use crate::routes::vault::{MAX_CHANGE_LENGTH, refusal_status, refusal_text, vaul
 use crate::session::Session;
 use crate::sync_core::{ChangeProblem, ProblemCode};
 use crate::time::now_ms;
-use crate::tokens::{new_token, same_digest, sha256_hex};
+use crate::tokens::{new_token, same_digest, sha256};
 use crate::vault::{self, Changed, NO_KEYS};
 use crate::views::accounts::signin_form;
 use crate::views::pair::{PAIR_TITLE, PairConfirm, pair_confirm, pair_page};
@@ -55,7 +55,7 @@ fn waiting_pairing(conn: &Connection, id: &str, kind: &str, proof: &str) -> Resu
     if !is_pairing_id(id) || !matches!(kind, "qr" | "code") || proof.is_empty() {
         return Ok(None);
     }
-    type Row = (Waiting, String, String, i64, Option<i64>);
+    type Row = (Waiting, Vec<u8>, Vec<u8>, i64, Option<i64>);
     let row: Option<Row> = conn
         .query_row(
             "SELECT device_id, public_key, sealed_device, proof_qr_hash, proof_code_hash, expires_at, completed_at
@@ -72,7 +72,7 @@ fn waiting_pairing(conn: &Connection, id: &str, kind: &str, proof: &str) -> Resu
         return Ok(None);
     }
     let expected = if kind == "qr" { qr_hash } else { code_hash };
-    Ok(same_digest(&expected, &sha256_hex(proof)).then_some(waiting))
+    Ok(same_digest(&expected, sha256(proof)).then_some(waiting))
 }
 
 /// The pairing page for a signed-in owner: the whole page for GET (boosted
@@ -171,7 +171,7 @@ fn sign_in_tv(conn: &mut Connection, account_id: &str, id: &str, sent: &SignIn, 
     let tx = conn.transaction()?;
     tx.execute(
         "INSERT INTO devices (id, account_id, public_key, token_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-        params![waiting.device_id, account_id, waiting.public_key, sha256_hex(&device_token), now],
+        params![waiting.device_id, account_id, waiting.public_key, sha256(&device_token), now],
     )?;
     tx.execute(
         "UPDATE pairings SET kind = ?, payload = ?, device_token = ? WHERE id = ?",

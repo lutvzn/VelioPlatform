@@ -13,14 +13,14 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::http::is_api;
 use crate::time::{DAY_MS, now_ms};
-use crate::tokens::{new_token, sha256_hex};
+use crate::tokens::{new_token, sha256};
 
 const COOKIE: &str = "__Host-velio";
 pub const SESSION_MS: i64 = 30 * DAY_MS;
 
 #[derive(Debug, Clone)]
 pub struct Session {
-    pub token_hash: String,
+    pub token_hash: Vec<u8>,
     pub account_id: String,
     pub email: String,
 }
@@ -46,7 +46,7 @@ pub fn start_session(conn: &Connection, account_id: &str) -> Result<String> {
     let now = now_ms();
     conn.execute(
         "INSERT INTO sessions (token_hash, account_id, created_at, last_used_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-        params![sha256_hex(&token), account_id, now, now, now + SESSION_MS],
+        params![sha256(&token), account_id, now, now, now + SESSION_MS],
     )?;
     Ok(token)
 }
@@ -105,7 +105,7 @@ pub async fn sessions(State(state): State<AppState>, mut req: Request, next: Nex
 
 /// The session for a token, and the token again when it was renewed.
 fn find_session(conn: &Connection, token: String) -> Result<Option<(Session, Option<String>)>> {
-    let token_hash = sha256_hex(&token);
+    let token_hash = sha256(&token);
     let now = now_ms();
     let row: Option<(String, i64, String)> = conn
         .query_row(

@@ -27,7 +27,7 @@ use crate::events::{EVENTS_PROTOCOL, read_events_protocols};
 use crate::http::api_problem;
 use crate::limits::Limit;
 use crate::time::now_ms;
-use crate::tokens::{new_id, new_token, random_bytes, same_digest, sha256_hex};
+use crate::tokens::{new_id, new_token, random_bytes, same_digest, sha256};
 use crate::vault::{self, DevicePull};
 use crate::web::Web;
 
@@ -125,7 +125,7 @@ fn device_by_token(conn: &Connection, token: &str) -> Result<Option<Device>> {
         .query_row(
             "SELECT d.id, d.account_id, d.last_pulled_at FROM devices d JOIN accounts a ON a.id = d.account_id
              WHERE d.token_hash = ? AND a.closed_at IS NULL",
-            [sha256_hex(token)],
+            [sha256(token)],
             |row| Ok(Device { id: row.get(0)?, account_id: row.get(1)?, last_pulled_at: row.get(2)? }),
         )
         .optional()?)
@@ -153,7 +153,7 @@ async fn start_pairing(web: Web, body: Bytes) -> Answer {
     };
 
     let poll_token = new_token();
-    let row = (sha256_hex(&poll_token), sha256_hex(qr), sha256_hex(code), public_key.to_owned(), sealed.to_string());
+    let row = (sha256(&poll_token), sha256(qr), sha256(code), public_key.to_owned(), sealed.to_string());
     let now = now_ms();
     let started = web
         .state
@@ -203,8 +203,8 @@ enum Poll {
     Done(Value),
 }
 
-fn check_pairing(conn: &Connection, id: &str, token_hash: &str, until: i64) -> Result<Poll> {
-    type Row = (String, i64, Option<i64>, Option<i64>, String, Option<String>, Option<String>, Option<String>);
+fn check_pairing(conn: &Connection, id: &str, token_hash: &[u8], until: i64) -> Result<Poll> {
+    type Row = (Vec<u8>, i64, Option<i64>, Option<i64>, String, Option<String>, Option<String>, Option<String>);
     let row: Option<Row> = conn
         .query_row(
             "SELECT poll_hash, expires_at, completed_at, delivered_at, device_id, kind, payload, device_token
@@ -273,7 +273,7 @@ async fn poll_pairing(web: Web, Path(id): Path<String>, RawQuery(query): RawQuer
         let problem = "Too many checks. Wait for each answer before asking again.";
         return Ok(api_problem(StatusCode::TOO_MANY_REQUESTS, problem));
     }
-    let token_hash = sha256_hex(token);
+    let token_hash = sha256(token);
     let until = now_ms() + (wait_seconds(query.as_deref()) * 1000.0) as i64;
     loop {
         let poll = web.state.db.call({
@@ -354,7 +354,7 @@ async fn signout(web: Web, headers: HeaderMap) -> Answer {
         .db
         .call(move |conn| {
             let device: Option<(String, String)> = conn
-                .query_row("SELECT id, account_id FROM devices WHERE token_hash = ?", [sha256_hex(&token)], |row| {
+                .query_row("SELECT id, account_id FROM devices WHERE token_hash = ?", [sha256(&token)], |row| {
                     Ok((row.get(0)?, row.get(1)?))
                 })
                 .optional()?;

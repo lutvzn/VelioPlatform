@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::accounts::Owner;
 use crate::config::TvLimits;
+use crate::packed::{Packed, pack_bundle, pack_sealed, pack_signed};
 use crate::sync_core::{
     ChangeProblem, KeyFor, ProblemCode, Sealed, Signed, StoredDevice, StoredList, StoredProfile, StoredState, SyncPull,
     apply_change, pull_for,
@@ -48,7 +49,7 @@ pub fn set_owner(conn: &Connection, account_id: &str, owner: &Owner) -> Result<(
          ON CONFLICT (account_id) DO UPDATE SET bundle = excluded.bundle,
            sign_public_key = excluded.sign_public_key, box_public_key = excluded.box_public_key,
            updated_at = excluded.updated_at",
-        params![account_id, owner.bundle, owner.sign_public_key, owner.box_public_key, now_ms()],
+        params![account_id, pack_bundle(&owner.bundle), owner.sign_public_key, owner.box_public_key, now_ms()],
     )?;
     Ok(())
 }
@@ -58,7 +59,13 @@ pub fn get_owner(conn: &Connection, account_id: &str) -> Result<Option<Owner>> {
         .query_row(
             "SELECT bundle, sign_public_key, box_public_key FROM vault_owner WHERE account_id = ?",
             [account_id],
-            |row| Ok(Owner { bundle: row.get(0)?, sign_public_key: row.get(1)?, box_public_key: row.get(2)? }),
+            |row| {
+                Ok(Owner {
+                    bundle: row.get::<_, Packed<String>>(0)?.0,
+                    sign_public_key: row.get(1)?,
+                    box_public_key: row.get(2)?,
+                })
+            },
         )
         .optional()?)
 }
@@ -71,24 +78,24 @@ pub fn recovery_made_at(conn: &Connection, account_id: &str) -> Result<Option<i6
 }
 
 /// The recovery key's copy of the owner bundle, with its auth key's hash; None turns it off.
-pub fn set_recovery(conn: &Connection, account_id: &str, recovery: Option<(&str, &str)>) -> Result<()> {
+pub fn set_recovery(conn: &Connection, account_id: &str, recovery: Option<(&[u8], &str)>) -> Result<()> {
     match recovery {
         None => conn.execute("DELETE FROM vault_recovery WHERE account_id = ?", [account_id])?,
         Some((auth_hash, bundle)) => conn.execute(
             "INSERT INTO vault_recovery (account_id, auth_hash, bundle, updated_at) VALUES (?, ?, ?, ?)
              ON CONFLICT (account_id) DO UPDATE SET auth_hash = excluded.auth_hash, bundle = excluded.bundle,
                updated_at = excluded.updated_at",
-            params![account_id, auth_hash, bundle, now_ms()],
+            params![account_id, auth_hash, pack_bundle(bundle), now_ms()],
         )?,
     };
     Ok(())
 }
 
 /// The owner's public keys with the recovery copy of the bundle, if the recovery key's auth hash matches.
-pub fn recovery_bundle(conn: &Connection, account_id: &str, auth_hash: &str) -> Result<Option<Owner>> {
-    let row: Option<(String, String)> = conn
+pub fn recovery_bundle(conn: &Connection, account_id: &str, auth_hash: &[u8]) -> Result<Option<Owner>> {
+    let row: Option<(Vec<u8>, String)> = conn
         .query_row("SELECT auth_hash, bundle FROM vault_recovery WHERE account_id = ?", [account_id], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+            Ok((row.get(0)?, row.get::<_, Packed<String>>(1)?.0))
         })
         .optional()?;
     let Some((_, bundle)) = row.filter(|(stored_hash, _)| same_digest(stored_hash, auth_hash)) else {
@@ -168,9 +175,8 @@ pub fn device_status(device: &DeviceRow) -> String {
     }
 }
 
-fn sealed(json: &str) -> rusqlite::Result<Sealed> {
-    serde_json::from_str(json)
-        .map_err(|error| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error)))
+fn sealed(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<Sealed> {
+    Ok(row.get::<_, Packed<Sealed>>(column)?.0)
 }
 
 fn json<T: serde::Serialize>(value: &T) -> String {
@@ -182,7 +188,7 @@ fn keys_by(conn: &Connection, sql: &str, account_id: &str) -> Result<HashMap<Str
     let mut keys: HashMap<String, Vec<KeyFor>> = HashMap::new();
     let mut statement = conn.prepare(sql)?;
     let rows = statement.query_map([account_id], |row| {
-        Ok((row.get::<_, String>(0)?, KeyFor { profile: row.get(1)?, key: sealed(&row.get::<_, String>(2)?)? }))
+        Ok((row.get::<_, String>(0)?, KeyFor { profile: row.get(1)?, key: sealed(row, 2)? }))
     })?;
     for row in rows {
         let (owner, key) = row?;
@@ -195,19 +201,19 @@ fn keys_by(conn: &Connection, sql: &str, account_id: &str) -> Result<HashMap<Str
 pub fn get_state(conn: &Connection, account_id: &str) -> Result<StoredState> {
     let manifest = conn
         .query_row("SELECT signed FROM vault_manifest WHERE account_id = ?", [account_id], |row| {
-            row.get::<_, String>(0)
+            row.get::<_, Packed<Signed>>(0)
         })
-        .optional()?
-        .map(|signed| serde_json::from_str::<Signed>(&signed).context("The stored manifest isn't readable"))
-        .transpose()?;
+        .optional()
+        .context("The stored manifest isn't readable")?
+        .map(|signed| signed.0);
     let profiles = conn
         .prepare("SELECT id, rev, sealed, key FROM vault_profiles WHERE account_id = ? ORDER BY position")?
         .query_map([account_id], |row| {
             Ok(StoredProfile {
                 id: row.get(0)?,
                 rev: row.get::<_, i64>(1)? as u64,
-                sealed: sealed(&row.get::<_, String>(2)?)?,
-                key: sealed(&row.get::<_, String>(3)?)?,
+                sealed: sealed(row, 2)?,
+                key: sealed(row, 3)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -225,8 +231,8 @@ pub fn get_state(conn: &Connection, account_id: &str) -> Result<StoredState> {
                 id: row.get(0)?,
                 rev: row.get::<_, i64>(1)? as u64,
                 key_rev: row.get::<_, i64>(2)? as u64,
-                sealed: sealed(&row.get::<_, String>(3)?)?,
-                key: sealed(&row.get::<_, String>(4)?)?,
+                sealed: sealed(row, 3)?,
+                key: sealed(row, 4)?,
                 profile_keys: Vec::new(),
             })
         })?
@@ -320,8 +326,8 @@ pub fn change(
                 account_id,
                 profile.id,
                 profile.rev as i64,
-                json(&profile.sealed),
-                json(&profile.key),
+                pack_sealed(&profile.sealed),
+                pack_sealed(&profile.key),
                 next_position("vault_profiles")?
             ],
         )?;
@@ -340,8 +346,8 @@ pub fn change(
                 list.id,
                 list.rev as i64,
                 list.key_rev as i64,
-                json(&list.sealed),
-                json(&list.key),
+                pack_sealed(&list.sealed),
+                pack_sealed(&list.key),
                 next_position("vault_lists")?
             ],
         )?;
@@ -349,7 +355,7 @@ pub fn change(
         for entry in &list.profile_keys {
             tx.execute(
                 "INSERT INTO vault_list_keys (account_id, list_id, profile_id, key) VALUES (?, ?, ?, ?)",
-                params![account_id, list.id, entry.profile, json(&entry.key)],
+                params![account_id, list.id, entry.profile, pack_sealed(&entry.key)],
             )?;
         }
     }
@@ -368,7 +374,7 @@ pub fn change(
         for entry in &device.keys {
             tx.execute(
                 "INSERT INTO vault_device_keys (account_id, device_id, profile_id, key) VALUES (?, ?, ?, ?)",
-                params![account_id, device.id, entry.profile, json(&entry.key)],
+                params![account_id, device.id, entry.profile, pack_sealed(&entry.key)],
             )?;
         }
     }
@@ -384,7 +390,7 @@ pub fn change(
         "INSERT INTO vault_manifest (account_id, rev, signed, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT (account_id) DO UPDATE SET rev = excluded.rev, signed = excluded.signed,
            updated_at = excluded.updated_at",
-        params![account_id, manifest.rev as i64, json(&change.manifest), now_ms()],
+        params![account_id, manifest.rev as i64, pack_signed(&change.manifest), now_ms()],
     )?;
     tx.commit()?;
     Ok(Ok(Changed {
@@ -411,7 +417,7 @@ mod tests {
                 let account = vectors["account"].as_str().unwrap();
                 conn.execute(
                     "INSERT INTO accounts (id, email, salt, kdf_memory_kib, kdf_iterations, kdf_parallelism,
-                       auth_hash, terms_accepted_at, created_at) VALUES (?, 'vectors@example.invalid', '', 0, 0, 0, '', 0, 0)",
+                       auth_hash, terms_accepted_at, created_at) VALUES (?, 'vectors@example.invalid', '', 0, 0, 0, X'', 0, 0)",
                     [account],
                 )?;
                 let sign_public_key = vectors["signPublicKey"].as_str().unwrap().to_owned();

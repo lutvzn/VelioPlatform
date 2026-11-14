@@ -34,13 +34,18 @@ pub fn new_id() -> String {
     URL_SAFE.encode(random_bytes::<12>())
 }
 
+/// A token's SHA-256, as the database keeps it: 32 bytes.
+pub fn sha256(data: impl AsRef<[u8]>) -> Vec<u8> {
+    Sha256::digest(data.as_ref()).to_vec()
+}
+
 pub fn sha256_hex(data: impl AsRef<[u8]>) -> String {
     hex::encode(Sha256::digest(data.as_ref()))
 }
 
-/// Compares two hex digests in constant time.
-pub fn same_digest(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
+/// Compares two digests in constant time.
+pub fn same_digest(a: impl AsRef<[u8]>, b: impl AsRef<[u8]>) -> bool {
+    let (a, b) = (a.as_ref(), b.as_ref());
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
@@ -71,9 +76,12 @@ mod tests {
         assert_ne!(token, new_token());
         let hash = sha256_hex("abc");
         assert_eq!(hash, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-        assert!(same_digest(&hash, &sha256_hex("abc")));
-        assert!(!same_digest(&hash, &sha256_hex("abd")));
+        assert!(same_digest(&hash, sha256_hex("abc")));
+        assert!(!same_digest(&hash, sha256_hex("abd")));
         assert!(!same_digest(&hash, "ba"));
+        assert_eq!(hex::encode(sha256("abc")), hash);
+        assert!(same_digest(sha256("abc"), sha256("abc")));
+        assert!(!same_digest(sha256("abc"), []));
     }
 
     #[test]

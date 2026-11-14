@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
 use crate::time::{DAY_MS, HOUR_MS, now_ms};
-use crate::tokens::{BASE64, decode, decodes, hmac_sha256, new_token, sha256_hex};
+use crate::tokens::{BASE64, decode, decodes, hmac_sha256, new_token, sha256};
 use base64::Engine;
 
 pub const CONFIRM_LINK_MS: i64 = 24 * HOUR_MS;
@@ -79,7 +79,7 @@ pub struct Account {
     pub confirmed_at: Option<i64>,
     pub salt: String,
     pub kdf: Kdf,
-    pub auth_hash: String,
+    pub auth_hash: Vec<u8>,
     pub closed_at: Option<i64>,
 }
 
@@ -131,8 +131,8 @@ pub fn prelogin_for(secret: &str, email: &str, account: Option<&Account>) -> Pre
 }
 
 /// The SHA-256 of an auth key sent as base64, or None if it isn't one.
-pub fn auth_hash_of(auth_key: &str) -> Option<String> {
-    decode(auth_key).filter(|key| key.len() == 32).map(sha256_hex)
+pub fn auth_hash_of(auth_key: &str) -> Option<Vec<u8>> {
+    decode(auth_key).filter(|key| key.len() == 32).map(sha256)
 }
 
 /// An owner bundle sent as JSON (a sync-core `Sealed`), as the JSON to store, or None.
@@ -159,7 +159,7 @@ pub struct Owner {
 pub struct Credentials {
     pub salt: String,
     pub kdf: Kdf,
-    pub auth_hash: String,
+    pub auth_hash: Vec<u8>,
     pub owner: Owner,
 }
 
@@ -227,7 +227,7 @@ pub fn new_email_link(conn: &Connection, account_id: &str, kind: LinkKind, lifet
     conn.execute("DELETE FROM email_links WHERE account_id = ? AND kind = ?", params![account_id, kind.as_str()])?;
     conn.execute(
         "INSERT INTO email_links (token_hash, account_id, kind, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-        params![sha256_hex(&token), account_id, kind.as_str(), now, now + lifetime_ms],
+        params![sha256(&token), account_id, kind.as_str(), now, now + lifetime_ms],
     )?;
     Ok(token)
 }
@@ -238,7 +238,7 @@ pub fn peek_email_link(conn: &Connection, token: &str, kind: LinkKind) -> Result
         .query_row(
             "SELECT account_id FROM email_links
              WHERE token_hash = ? AND kind = ? AND used_at IS NULL AND expires_at > ?",
-            params![sha256_hex(token), kind.as_str(), now_ms()],
+            params![sha256(token), kind.as_str(), now_ms()],
             |row| row.get(0),
         )
         .optional()?)
@@ -252,7 +252,7 @@ pub fn use_email_link(conn: &Connection, token: &str, kind: LinkKind) -> Result<
             "UPDATE email_links SET used_at = ?
              WHERE token_hash = ? AND kind = ? AND used_at IS NULL AND expires_at > ?
              RETURNING account_id",
-            params![now, sha256_hex(token), kind.as_str(), now],
+            params![now, sha256(token), kind.as_str(), now],
             |row| row.get(0),
         )
         .optional()?)
@@ -296,7 +296,7 @@ mod tests {
         ]);
         let credentials = read_credentials(&form).unwrap();
         assert_eq!(credentials.kdf, DEFAULT_KDF);
-        assert_eq!(credentials.auth_hash, sha256_hex([1u8; 32]));
+        assert_eq!(credentials.auth_hash, sha256([1u8; 32]));
 
         form.insert("kdf_memory_kib", "1024".into());
         assert!(read_credentials(&form).unwrap_err().contains("settings are refused: memory"));

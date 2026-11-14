@@ -197,7 +197,7 @@ enum Recover {
 fn recover_account(
     conn: &mut Connection,
     token: &str,
-    recovery_auth_hash: Option<&str>,
+    recovery_auth_hash: Option<&[u8]>,
     credentials: &Credentials,
 ) -> Result<Recover> {
     let Some(linked) = peek_email_link(conn, token, LinkKind::Reset)? else { return Ok(Recover::LinkGone) };

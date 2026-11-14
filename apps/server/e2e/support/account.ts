@@ -4,7 +4,19 @@
 import { db } from "./runtime.ts";
 
 const text = (value: unknown) => (typeof value === "string" ? value : "");
-const json = (value: unknown): unknown => JSON.parse(text(value));
+const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
+
+/**
+ * Ciphertext as src/packed.rs stores it, read back as the JSON it was sent as:
+ * a BLOB of 1, the nonce and the box, or of 2, the signature and the body;
+ * or the JSON text itself.
+ */
+const json = (value: unknown): unknown => {
+  if (!(value instanceof Uint8Array)) return JSON.parse(text(value));
+  if (value[0] === 1) return { nonce: base64(value.subarray(1, 25)), box: base64(value.subarray(25)) };
+  if (value[0] === 2) return { body: base64(value.subarray(65)), signature: base64(value.subarray(1, 65)) };
+  throw new Error(`Not a packed value: ${Buffer.from(value).toString("hex")}`);
+};
 
 /** Every table that holds an account's vault, children first, as vault.rs deletes them. */
 export const VAULT_TABLES = [
@@ -18,7 +30,10 @@ export const VAULT_TABLES = [
   "vault_owner",
 ];
 
-/** Every row of the account's vault, in every vault_* table, as text. */
+/**
+ * Every row of the account's vault, in every vault_* table, as text: hashes
+ * in hex, and ciphertext as the JSON it was sent as.
+ */
 export const everythingStored = (accountId: string) => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'vault\\_%' ESCAPE '\\'")
@@ -26,6 +41,12 @@ export const everythingStored = (accountId: string) => {
     .map(row => String(row.name));
   return JSON.stringify(
     tables.map(table => db.prepare(`SELECT * FROM ${table} WHERE account_id = ?`).all(accountId)),
+    (key, value: unknown) =>
+      value instanceof Uint8Array
+        ? key.endsWith("_hash")
+          ? Buffer.from(value).toString("hex")
+          : json(value)
+        : value,
   );
 };
 

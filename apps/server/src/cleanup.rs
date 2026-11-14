@@ -13,7 +13,7 @@ use crate::accounts::UNCONFIRMED_MS;
 use crate::backup::back_up;
 use crate::closing::purge_closed_accounts;
 use crate::config::Backup;
-use crate::db::Db;
+use crate::db::{Db, give_back_free_pages};
 use crate::time::{DAY_MS, HOUR_MS, now_ms};
 
 /// 04:17 UTC, a quiet time off the hour.
@@ -39,6 +39,7 @@ pub fn clean_up(conn: &mut Connection, now: i64) -> Result<Cleaned> {
     tx.execute("DELETE FROM pairings WHERE expires_at <= ?", [now])?;
     tx.execute("DELETE FROM dev_outbox WHERE sent_at <= ?", [now - 7 * DAY_MS])?;
     tx.commit()?;
+    give_back_free_pages(conn)?;
     Ok(Cleaned { unconfirmed, purged })
 }
 
@@ -112,8 +113,8 @@ mod tests {
             conn.execute_batch(
                 "INSERT INTO accounts (id, email, confirmed_at, salt, kdf_memory_kib, kdf_iterations,
                    kdf_parallelism, auth_hash, terms_accepted_at, created_at)
-                 VALUES ('new', 'new@example.invalid', NULL, 's', 65536, 3, 1, 'h', 0, 0),
-                        ('kept', 'kept@example.invalid', 1, 's', 65536, 3, 1, 'h', 0, 0);
+                 VALUES ('new', 'new@example.invalid', NULL, 's', 65536, 3, 1, X'00', 0, 0),
+                        ('kept', 'kept@example.invalid', 1, 's', 65536, 3, 1, X'00', 0, 0);
                  INSERT INTO vault_owner (account_id, bundle, sign_public_key, box_public_key, updated_at)
                  VALUES ('new', '{}', 'k', 'k', 0);",
             )?;

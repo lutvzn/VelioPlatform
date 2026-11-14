@@ -115,7 +115,7 @@ pub fn purge_closed_accounts(conn: &Connection, now: i64) -> Result<usize> {
         for table in ["devices", "pairings", "sessions", "email_links"] {
             conn.execute(&format!("DELETE FROM {table} WHERE account_id = ?"), [id])?;
         }
-        conn.execute("UPDATE accounts SET purged_at = ?, salt = '', auth_hash = '' WHERE id = ?", params![now, id])?;
+        conn.execute("UPDATE accounts SET purged_at = ?, salt = '', auth_hash = X'' WHERE id = ?", params![now, id])?;
     }
     Ok(ids.len())
 }
@@ -132,7 +132,7 @@ mod tests {
             conn.execute_batch(
                 "INSERT INTO accounts (id, email, confirmed_at, salt, kdf_memory_kib, kdf_iterations,
                    kdf_parallelism, auth_hash, terms_accepted_at, created_at)
-                 VALUES ('a', 'a@example.invalid', 1, 's', 65536, 3, 1, 'h', 0, 0);
+                 VALUES ('a', 'a@example.invalid', 1, 's', 65536, 3, 1, X'00', 0, 0);
                  INSERT INTO vault_owner (account_id, bundle, sign_public_key, box_public_key, updated_at)
                  VALUES ('a', '{}', 'k', 'k', 0);",
             )?;

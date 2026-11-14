@@ -16,6 +16,7 @@ pub mod limits;
 pub mod mail;
 pub mod notices;
 pub mod ops_session;
+pub mod packed;
 pub mod routes;
 pub mod session;
 pub mod sync_core;

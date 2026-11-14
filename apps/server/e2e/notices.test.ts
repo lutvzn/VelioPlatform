@@ -318,7 +318,7 @@ describe("closing an account", () => {
     await cleanUp(env, deleteAt + 60_000);
     expect(await accountStub(env, browser.accountId).getOwner()).toBeNull();
     const account = await env.DB.prepare(
-      "SELECT email, closed_reason, purged_at, auth_hash FROM accounts WHERE id = ?",
+      "SELECT email, closed_reason, purged_at, hex(auth_hash) AS auth_hash FROM accounts WHERE id = ?",
     )
       .bind(browser.accountId)
       .first();
