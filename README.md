@@ -273,3 +273,9 @@ after closing.
   TVs are counted against its TV limit.
 - The website checks same-origin posts, uses `__Host-` SameSite=Strict
   cookies, rate limits per IP, and sends a strict CSP on every page.
+
+## Licence
+
+AGPL-3.0 (`LICENSE`). Anyone who runs a changed copy of this server for
+others must offer them its source. Parts come from Supabase and Nuvio under
+MIT and Apache-2.0; `THIRD_PARTY_NOTICES.md` lists them.
