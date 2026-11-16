@@ -1,16 +1,8 @@
-// Phase 7's hardening: the headers on pages and /v1, the caps on body sizes,
-// and the limit on a TV's pairing polls.
+// The headers on pages and on the API, and the caps on body sizes.
 
-import { newOwnerKeys, newPairingSecrets, pairRequest, toBase64 } from "@velio/sync-core";
 import { describe, expect, it } from "vitest";
 import { PERMISSIONS } from "./support/constants.ts";
-import { fresh, request, SITE, worker } from "./helpers.ts";
-
-const tvFetch = (ip: string, path: string, init: RequestInit = {}) => {
-  const headers = new Headers(init.headers);
-  headers.set("cf-connecting-ip", ip);
-  return worker.fetch(`${SITE}${path}`, { ...init, headers });
-};
+import { api, fresh, ops, request, SITE } from "./helpers.ts";
 
 describe("headers", () => {
   it("lock pages down", async () => {
@@ -31,63 +23,56 @@ describe("headers", () => {
     expect(PERMISSIONS).toContain("camera=()");
   });
 
-  it("leave /v1 open to TV apps", async () => {
-    const answer = await tvFetch(fresh().ip, "/v1/pair/nope", { headers: { Origin: "http://tv.invalid" } });
-    expect(answer.headers.get("Access-Control-Allow-Origin")).toBe("*");
-    expect(answer.headers.get("Content-Security-Policy")).toBeNull();
-    expect(answer.headers.get("Cross-Origin-Resource-Policy")).toBeNull();
+  it("leave Nuvio's API open to apps on any origin, as Supabase does", async () => {
+    for (const path of ["/rest/v1/rpc/sync_pull_profiles", "/auth/v1/settings", "/.well-known/nuvio"]) {
+      const answer = await api(path, { headers: { Origin: "http://tv.invalid" } });
+      expect(answer.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(answer.headers.get("Content-Security-Policy")).toBeNull();
+      expect(answer.headers.get("Cross-Origin-Resource-Policy")).toBeNull();
+    }
+    const preflight = await api("/rest/v1/profiles", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://tv.invalid",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "apikey, authorization, content-type, prefer",
+      },
+    });
+    expect(preflight.status).toBeLessThan(300);
+    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("*");
   });
 });
 
 describe("body sizes", () => {
-  it("are capped for /v1", async () => {
-    const answer = await tvFetch(fresh().ip, "/v1/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "x".repeat(70_000) }),
+  it("are capped for the API, above a 5 MB avatar", async () => {
+    const answer = await api("/rest/v1/rpc/sync_push_profiles", {
+      body: { p_profiles: "x".repeat(9 * 1024 * 1024) },
+    });
+    expect(answer.status).toBe(413);
+  });
+
+  it("are capped for /ops", async () => {
+    const answer = await ops("/accounts/00000000-0000-0000-0000-000000000000/close", {
+      reason: "x".repeat(70_000),
     });
     expect(answer.status).toBe(413);
     expect(await answer.json()).toEqual({ problem: "This is too big to send" });
   });
 
-  it("are capped for web forms, above the biggest change", async () => {
+  it("are capped for web forms, above the biggest form", async () => {
     const visitor = fresh();
     const answer = await request(visitor, "/signin", {
       method: "POST",
       headers: { Origin: SITE, "Content-Type": "application/x-www-form-urlencoded" },
-      body: `email=${"a".repeat(11 * 1024 * 1024)}`,
+      body: `email=${"a".repeat(2 * 1024 * 1024)}`,
     });
     expect(answer.status).toBe(413);
-    // A form well under the cap still gets to its route.
+    // A form under the cap still gets to its route.
     const small = await request(visitor, "/signin", {
       method: "POST",
       headers: { Origin: SITE, "HX-Request": "true", "Content-Type": "application/x-www-form-urlencoded" },
-      body: `email=${"a".repeat(1_000_000)}`,
+      body: `email=${"a".repeat(100_000)}`,
     });
     expect(small.status).not.toBe(413);
-  });
-});
-
-describe("a TV's pairing polls", () => {
-  it("are limited per address, so a TV has to wait for each answer", async () => {
-    const { ip } = fresh();
-    const secrets = newPairingSecrets();
-    const publicKey = toBase64(newOwnerKeys().box.publicKey);
-    const started = await tvFetch(ip, "/v1/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(pairRequest(secrets, { format: 1, publicKey, name: "Busy TV" })),
-    });
-    const { id, pollToken } = await started.json<{ id: string; pollToken: string }>();
-    const statuses: number[] = [];
-    for (let i = 0; i < 21; i++) {
-      const answer = await tvFetch(ip, `/v1/pair/${id}?wait=0`, {
-        headers: { Authorization: `Bearer ${pollToken}` },
-      });
-      statuses.push(answer.status);
-      await answer.body?.cancel();
-    }
-    expect(statuses.slice(0, 20).every(status => status === 200)).toBe(true);
-    expect(statuses[20]).toBe(429);
   });
 });

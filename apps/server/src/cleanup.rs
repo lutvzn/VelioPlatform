@@ -1,20 +1,20 @@
-//! The daily clean-up (the Worker's cron, `lib/cleanup.ts`): unconfirmed
-//! accounts after 7 days, closed accounts' data after 30 days, and expired
-//! sessions, links and pairings. Run once at start and then every day at
-//! 04:17 UTC, followed by the backup when it's set; or by hand with
-//! `velio-server clean-up`.
+//! The daily clean-up: accounts left unconfirmed after 7 days, closed
+//! accounts' data after 30 days, the website's expired sessions, and the
+//! refresh tokens and sessions GoTrue's own clean-up deletes. Run once
+//! at start and then every day at 04:17 UTC, or by hand with
+//! `velio-server clean-up`. Backups are Postgres's own (pg_dump, or the
+//! host's), not the server's.
 
 use std::time::Duration;
 
 use anyhow::Result;
-use rusqlite::Connection;
 
-use crate::accounts::UNCONFIRMED_MS;
-use crate::backup::back_up;
 use crate::closing::purge_closed_accounts;
-use crate::config::Backup;
-use crate::db::{Db, give_back_free_pages};
+use crate::db::Db;
 use crate::time::{DAY_MS, HOUR_MS, now_ms};
+
+/// Unconfirmed accounts are deleted after this.
+pub const UNCONFIRMED_MS: i64 = 7 * DAY_MS;
 
 /// 04:17 UTC, a quiet time off the hour.
 pub const DAILY_AT_MS: i64 = 4 * HOUR_MS + 17 * 60_000;
@@ -22,25 +22,42 @@ pub const DAILY_AT_MS: i64 = 4 * HOUR_MS + 17 * 60_000;
 /// What a clean-up deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cleaned {
-    pub unconfirmed: usize,
+    pub unconfirmed: u64,
     /// Closed accounts whose data went.
     pub purged: usize,
+    /// Refresh tokens used up a day ago or more.
+    pub tokens: u64,
+    /// Sessions 72 hours past their end, with their tokens.
+    pub sessions: u64,
 }
 
-/// Deletes what's old at `now`.
-pub fn clean_up(conn: &mut Connection, now: i64) -> Result<Cleaned> {
-    let tx = conn.transaction()?;
-    // Their sessions, links and vault rows go with them (ON DELETE CASCADE).
-    let unconfirmed =
-        tx.execute("DELETE FROM accounts WHERE confirmed_at IS NULL AND created_at < ?", [now - UNCONFIRMED_MS])?;
-    let purged = purge_closed_accounts(&tx, now)?;
-    tx.execute("DELETE FROM sessions WHERE expires_at <= ?", [now])?;
-    tx.execute("DELETE FROM email_links WHERE expires_at <= ?", [now])?;
-    tx.execute("DELETE FROM pairings WHERE expires_at <= ?", [now])?;
-    tx.execute("DELETE FROM dev_outbox WHERE sent_at <= ?", [now - 7 * DAY_MS])?;
-    tx.commit()?;
-    give_back_free_pages(conn)?;
-    Ok(Cleaned { unconfirmed, purged })
+/// Deletes what's old at `now`, in milliseconds.
+pub async fn clean_up(db: &Db, now: i64) -> Result<Cleaned> {
+    let mut client = db.client().await?;
+    let tx = client.transaction().await?;
+    let at = now as f64 / 1000.0;
+    // Their identities and sessions go with them (ON DELETE CASCADE). Guests
+    // have no email to confirm, so they stay, as on Nuvio's server.
+    let unconfirmed = tx
+        .execute(
+            "DELETE FROM auth.users WHERE email_confirmed_at IS NULL AND NOT is_anonymous
+               AND created_at < to_timestamp($1)",
+            &[&(at - (UNCONFIRMED_MS / 1000) as f64)],
+        )
+        .await?;
+    let purged = purge_closed_accounts(&tx, now).await?;
+    tx.execute("DELETE FROM velio_private.web_sessions WHERE expires_at <= to_timestamp($1)", &[&at]).await?;
+    tx.execute("DELETE FROM velio_private.dev_outbox WHERE sent_at <= $1", &[&(now - 7 * DAY_MS)]).await?;
+    // As GoTrue's clean-up (internal/models/cleanup.go), by the database's
+    // clock: a token used up is kept a day for reuse detection, and a session
+    // 72 hours after its end, so a late refresh is told it ended. Otherwise
+    // every refresh leaves a row behind for good.
+    let tokens = tx
+        .execute("DELETE FROM auth.refresh_tokens WHERE revoked AND updated_at < now() - interval '24 hours'", &[])
+        .await?;
+    let sessions = tx.execute("DELETE FROM auth.sessions WHERE not_after < now() - interval '72 hours'", &[]).await?;
+    tx.commit().await?;
+    Ok(Cleaned { unconfirmed, purged, tokens, sessions })
 }
 
 fn log(cleaned: Cleaned) {
@@ -50,6 +67,9 @@ fn log(cleaned: Cleaned) {
     if cleaned.purged > 0 {
         tracing::info!("Deleted the data of {} closed accounts", cleaned.purged);
     }
+    if cleaned.tokens > 0 || cleaned.sessions > 0 {
+        tracing::info!("Deleted {} used refresh tokens and {} ended sessions", cleaned.tokens, cleaned.sessions);
+    }
 }
 
 /// How long from `now` until the next DAILY_AT_MS.
@@ -58,37 +78,20 @@ pub fn until_daily(now: i64) -> i64 {
 }
 
 async fn run_clean_up(db: &Db) {
-    match db.call(|conn| clean_up(conn, now_ms())).await {
+    match clean_up(db, now_ms()).await {
         Ok(cleaned) => log(cleaned),
         Err(error) => tracing::error!("The clean-up failed: {error:#}"),
     }
 }
 
-pub async fn run_backup(db: &Db, backup: &Backup, http: &reqwest::Client) {
-    match back_up(db, backup, http, now_ms()).await {
-        Ok(done) => tracing::info!(
-            "Backed up the database to {} ({} bytes{}), and deleted {} older copies",
-            done.path.display(),
-            done.bytes,
-            if done.uploaded { ", also sent to S3" } else { "" },
-            done.pruned
-        ),
-        Err(error) => tracing::error!("The backup failed: {error:#}"),
-    }
-}
-
-/// Runs the clean-up now, and then it and the backup every day, for as long
-/// as the server runs.
-pub fn spawn_daily(db: Db, backup: Option<Backup>, http: reqwest::Client) {
+/// Runs the clean-up now, and then every day, for as long as the server runs.
+pub fn spawn_daily(db: Db) {
     tokio::spawn(async move {
         run_clean_up(&db).await;
         loop {
             let wait = u64::try_from(until_daily(now_ms())).unwrap_or(0);
             tokio::time::sleep(Duration::from_millis(wait)).await;
             run_clean_up(&db).await;
-            if let Some(backup) = &backup {
-                run_backup(&db, backup, &http).await;
-            }
         }
     });
 }
@@ -104,30 +107,5 @@ mod tests {
         assert_eq!(until_daily(DAILY_AT_MS - 1), 1);
         assert_eq!(until_daily(DAILY_AT_MS + 1), DAY_MS - 1);
         assert_eq!(until_daily(10 * DAY_MS + 5 * HOUR_MS), DAY_MS - 43 * 60_000);
-    }
-
-    #[tokio::test]
-    async fn deletes_unconfirmed_accounts_after_7_days() {
-        let db = Db::in_memory().unwrap();
-        db.call(|conn| {
-            conn.execute_batch(
-                "INSERT INTO accounts (id, email, confirmed_at, salt, kdf_memory_kib, kdf_iterations,
-                   kdf_parallelism, auth_hash, terms_accepted_at, created_at)
-                 VALUES ('new', 'new@example.invalid', NULL, 's', 65536, 3, 1, X'00', 0, 0),
-                        ('kept', 'kept@example.invalid', 1, 's', 65536, 3, 1, X'00', 0, 0);
-                 INSERT INTO vault_owner (account_id, bundle, sign_public_key, box_public_key, updated_at)
-                 VALUES ('new', '{}', 'k', 'k', 0);",
-            )?;
-            assert_eq!(clean_up(conn, 6 * DAY_MS)?.unconfirmed, 0);
-            assert_eq!(clean_up(conn, 8 * DAY_MS)?.unconfirmed, 1);
-            let ids: Vec<String> =
-                conn.prepare("SELECT id FROM accounts")?.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
-            assert_eq!(ids, ["kept"]);
-            let owners: i64 = conn.query_row("SELECT count(*) FROM vault_owner", [], |row| row.get(0))?;
-            assert_eq!(owners, 0);
-            Ok(())
-        })
-        .await
-        .unwrap();
     }
 }

@@ -6,7 +6,6 @@
 
 use maud::{Markup, html};
 
-use crate::backup::BACKUP_KEEP_DAYS;
 use crate::config::{Config, Mail};
 use crate::views::accounts::{problem, turnstile};
 use crate::views::layout::{ICON_LOCK, ICON_PHONE, ICON_SERVER, icon};
@@ -14,7 +13,7 @@ use crate::views::layout::{ICON_LOCK, ICON_PHONE, ICON_SERVER, icon};
 pub fn home(signed_in: bool) -> Markup {
     html! {
         section .hero {
-            p .eyebrow { "End-to-end encrypted" }
+            p .eyebrow { "Works with Nuvio" }
             h1 { "Your lists, on every TV" }
             p .lead {
                 "Velio keeps the M3U playlists and Xtream logins of your own IPTV subscriptions in one account, and every \
@@ -33,14 +32,15 @@ pub fn home(signed_in: bool) -> Markup {
         ul .features {
             li {
                 (icon(ICON_LOCK))
-                h2 { "Encrypted in your browser" }
-                p { "Your lists are encrypted in this browser with your password before they're sent." }
+                h2 { "Profiles with PINs" }
+                p { "Up to 6 profiles, each with its own add-ons, history and lists, and a PIN if you like." }
             }
             li {
                 (icon(ICON_SERVER))
-                h2 { "Only ciphertext on the server" }
+                h2 { "One account for Nuvio and VelioTV" }
                 p {
-                    "Velio's servers can't read a playlist address, a server, a username or a password."
+                    "Nuvio's apps can use this server instead of Nuvio's own, and see the same profiles, add-ons and \
+                     progress as VelioTV."
                 }
             }
             li {
@@ -63,11 +63,7 @@ pub fn terms(abuse_email: &str, tv_limit: usize) -> Markup {
                 li { "Velio stores and syncs the sources you add, for your own devices. It provides no content." }
                 li { "Add only sources you have the right to use, such as your own subscriptions." }
                 li {
-                    "Your lists are encrypted on your devices. Velio can't see what you store, and can't recover it if you \
-                     lose your password and have no recovery key."
-                }
-                li {
-                    "An account is for one household: up to " (tv_limit) " TVs, 8 profiles and 50 lists. Lists can't be \
+                    "An account is for one household: up to " (tv_limit) " TVs, 6 profiles and 50 lists. Lists can't be \
                      shared with other accounts."
                 }
                 li {
@@ -75,7 +71,7 @@ pub fn terms(abuse_email: &str, tv_limit: usize) -> Markup {
                      once are closed."
                 }
                 li {
-                    "When an account is closed, its owner is emailed the reason. Its TVs are signed out, and its encrypted \
+                    "When an account is closed, its owner is emailed the reason. Its TVs and apps are signed out, and its \
                      data is deleted 30 days later. To contest it, write to "
                     a href=(mailto) { (abuse_email) }
                     " before then."
@@ -98,14 +94,14 @@ pub fn terms(abuse_email: &str, tv_limit: usize) -> Markup {
 }
 
 /// Who handles what, from the settings: the network in front of the server,
-/// email, Turnstile and off-site backups.
+/// email and Turnstile.
 fn handlers(cfg: &Config) -> Vec<String> {
     let mut lines =
         vec!["Velio runs on a server of its own: the service and its database are on one machine.".to_owned()];
     if let Some(provider) = &cfg.network_provider {
         lines.push(format!(
-            "{provider} carries traffic between you and that server, and handles HTTPS on the way. It sees what \
-             Velio sees: your lists only encrypted."
+            "{provider} carries traffic between you and that server, and handles HTTPS on the way. Like Velio, it \
+             can see what's sent, your lists included."
         ));
     }
     lines.push(match cfg.mail {
@@ -115,9 +111,6 @@ fn handlers(cfg: &Config) -> Vec<String> {
     if cfg.turnstile.is_some() {
         lines.push("Cloudflare runs the check that you're a person on the sign-up, reset and report forms.".into());
     }
-    if cfg.backup.as_ref().is_some_and(|backup| backup.s3.is_some()) {
-        lines.push("A storage provider keeps a second copy of the nightly backups.".into());
-    }
     lines
 }
 
@@ -126,22 +119,19 @@ pub fn privacy(cfg: &Config) -> Markup {
         section.prose {
             h1 { "Privacy" }
             p.note { "Draft. To be reviewed before Velio is open to the public." }
-            h2 { "What Velio can't read" }
-            p {
-                "Your lists, profile and TV names, PINs and keys are encrypted on your devices before they're sent. Velio can't \
-                 read them, and neither can anyone who gets a copy of its databases. See "
-                a href="/security" { "how Velio protects your lists" }
-                "."
-            }
             h2 { "What Velio holds" }
             ul {
+                li { "Your email address, when you made the account, and a hash of your password (bcrypt)." }
                 li {
-                    "Your email address, when you made the account and accepted the terms, the salt and settings your \
-                     password is turned into keys with, and a hash of your sign-in key."
+                    "Your profiles, add-ons, IPTV lists, library, watch progress, history and settings, as your apps \
+                     and this site save them. They're stored as they are, not encrypted: Velio can read them, and \
+                     reads them only to run the service or deal with a notice about the account."
                 }
-                li { "Your sessions in browsers, and how many TVs you have and when they last synced." }
-                li { "How many profiles and lists you have, and when they changed." }
-                li { "If you made a recovery key: a copy of your keys sealed under it, and a hash of its sign-in key." }
+                li { "Profile PINs, only as hashes." }
+                li {
+                    "Your sign-ins: which TVs, apps and browsers, their names and versions, and when they were last \
+                     used."
+                }
                 li { "If you send a notice: what you write in the form, kept as a record of the notice and what was done." }
             }
             h2 { "How long" }
@@ -153,12 +143,6 @@ pub fn privacy(cfg: &Config) -> Markup {
                      reason are kept, so it can't simply be made again."
                 }
                 li { "Request logs, which can include IP addresses, are kept for at most 7 days." }
-                @if cfg.backup.is_some() {
-                    li {
-                        "The database is backed up each night, and each backup is kept " (BACKUP_KEEP_DAYS) " days, so \
-                         deleted data can stay in one for up to " (BACKUP_KEEP_DAYS) " days more."
-                    }
-                }
             }
             h2 { "Who handles it" }
             p {
@@ -170,83 +154,51 @@ pub fn privacy(cfg: &Config) -> Markup {
     }
 }
 
-/// How Velio protects the lists, for owners (Phase 7). PLAN.md has the details.
+/// How Velio protects the account, for owners.
 pub fn security(cfg: &Config) -> Markup {
     html! {
         section.prose {
-            h1 { "How Velio protects your lists" }
+            h1 { "How Velio protects your account" }
             p {
-                "Your lists hold addresses and logins that are yours. Velio keeps them so that your TVs can have them, \
-                 without being able to read them."
+                "Your lists hold addresses and logins that are yours. Velio keeps them on its server so that your TVs \
+                 and apps can have them. They aren't end-to-end encrypted: like Nuvio's own server, Velio's can read \
+                 what it stores."
             }
 
             h2 { "Your password" }
             p {
-                "Your browser turns your password into two keys, with Argon2id (64 MiB, 3 passes) and a salt of your own. \
-                 One key signs you in: Velio keeps only a hash of it. The other opens your account's keys, which Velio \
-                 keeps sealed under it. Your password and that second key never leave your browser."
+                "Velio keeps only a hash of your password (bcrypt). Signing in gives a short-lived token and a refresh \
+                 token, as Nuvio's server does; changing your password or resetting it signs out everything else."
             }
 
-            h2 { "Your lists and profiles" }
+            h2 { "What each sign-in can reach" }
             p {
-                "Each list and each profile is encrypted in your browser with a key of its own (XSalsa20-Poly1305), \
-                 before it's sent. Your browser signs the account's list of what exists (Ed25519), so a TV or another \
-                 browser can tell if anything was changed, added, dropped or swapped on the way."
-            }
-            p {
-                "This browser also remembers the newest version of your account it has opened, and refuses an older one. \
-                 That stops a server from quietly undoing a change, such as bringing back a TV you removed. A browser \
-                 that has never opened your account can't tell, so make changes from one you use often."
+                "Every request runs in the database as you, under row-level security, so a token reaches only your \
+                 own account's rows."
             }
 
             h2 { "Your TVs" }
             p {
-                "A TV makes its own keys, and gets only the keys of the profiles you give it. The QR code it shows \
-                 carries a secret that goes from the TV to your phone without passing through Velio, so Velio can't slip \
-                 in keys of its own. The code you can type instead is shorter: a hostile server could work it out in \
-                 days, though not within the 10 minutes it lasts. Scan the QR code when you can."
-            }
-            p {
-                "When you remove a TV or take a profile from it, your browser makes new keys for what it could read, so \
-                 it can't read anything you change after that. It may still have what it had before."
+                "A TV shows a QR code and a short code that last 10 minutes. Approving it here signs it in to your \
+                 account. "
+                a href="/devices" { "TVs and apps" }
+                " lists everything signed in, and signs out what you don't recognise."
             }
 
-            h2 { "A forgotten password" }
+            h2 { "The pages" }
             p {
-                "Velio can't open your lists, so it can't give them back. Without a recovery key, resetting the password \
-                 deletes your lists and profiles. With a "
-                a href="/account" { "recovery key" }
-                " and the reset email, you keep everything. Keep the recovery key away from the devices you use Velio on."
-            }
-
-            h2 { "What Velio can still do" }
-            p {
-                "Velio sends the page your browser runs. If Velio itself were taken over, the page could be changed to \
-                 send your password elsewhere: that's true of any service you use in a browser. Pages run only code from "
+                "Pages run only code from "
                 (cfg.site_host)
                 @if cfg.turnstile.is_some() { ", plus Cloudflare's Turnstile check on the sign-up and reset pages" }
                 ", under a strict Content-Security-Policy, and only over HTTPS."
             }
             @if let Some(provider) = &cfg.network_provider {
                 p {
-                    "HTTPS ends at " (provider) ", which passes requests on to Velio's server. Like Velio, it sees your \
-                     lists only encrypted, and could change the page in the same way."
+                    "HTTPS ends at " (provider) ", which passes requests on to Velio's server, so it can see what's \
+                     sent too."
                 }
             }
-            p {
-                "Velio knows your email address, how many TVs, profiles and lists you have, and when things \
-                 happen. See "
-                a href="/privacy" { "Privacy" }
-                "."
-            }
-
-            h2 { "A copy for you" }
-            p {
-                "On "
-                a href="/lists" { "Your lists" }
-                ", you can download your lists and profiles as a file. Your browser makes it from what it has opened. It \
-                 isn't encrypted, so keep it safe."
-            }
+            p { "See " a href="/privacy" { "Privacy" } " for what Velio holds, and for how long." }
         }
     }
 }
@@ -264,7 +216,7 @@ pub fn account_deleted() -> Markup {
     html! {
         section {
             h1 { "Your account is deleted" }
-            p { "Its lists, profiles and keys are gone from Velio, and its TVs are signed out." }
+            p { "Its lists, profiles and add-ons are gone from Velio, and its TVs and apps are signed out." }
             p { a href="/" { "Go to the start" } }
         }
     }
@@ -277,9 +229,8 @@ pub fn abuse_form(site_key: Option<&str>, abuse_email: &str) -> Markup {
         section .prose {
             h1 { "Report abuse or copyright infringement" }
             p {
-                "Velio syncs the lists people add for their own TVs. It provides no content, and it stores lists \
-                 encrypted, so it can't see them, search them, or remove a single one. What it can do is close the \
-                 account that holds them: name it by its email address if you know it."
+                "Velio syncs the lists people add for their own TVs. It provides no content. It can close the \
+                 account that holds a list: name it by its email address if you know it."
             }
             p {
                 "You can also write to " a href={ "mailto:" (abuse_email) } { (abuse_email) } ". Authorities with a \
@@ -359,7 +310,8 @@ mod tests {
     fn config(extra: &[(&str, &str)]) -> Config {
         let pairs: Vec<(&str, &str)> = [
             ("VELIO_SITE_URL", "https://velio.tv"),
-            ("PRELOGIN_SECRET", "a-prelogin-secret-of-32-characters!"),
+            ("JWT_SECRET", "a-jwt-secret-of-at-least-32-characters!"),
+            ("DATABASE_URL", "postgres://velio@127.0.0.1/velio"),
             ("EMAIL_FROM", "no-reply@velio.tv"),
             ("ABUSE_EMAIL", "abuse@velio.tv"),
             ("SMTP_URL", "smtps://user:pass@mail.example:465"),
@@ -378,7 +330,7 @@ mod tests {
         let plain = config(&[]);
         let (plain_privacy, plain_security) = (privacy(&plain).into_string(), security(&plain).into_string());
         assert!(!plain_privacy.contains("Cloudflare") && !plain_security.contains("Cloudflare"));
-        assert!(plain_privacy.contains("An email provider sends its email.") && !plain_privacy.contains("backed up"));
+        assert!(plain_privacy.contains("An email provider sends its email."));
 
         let velio = config(&[
             ("VELIO_NETWORK_PROVIDER", "Cloudflare"),
@@ -386,19 +338,9 @@ mod tests {
             ("SMTP_URL", ""),
             ("TURNSTILE_SITE_KEY", "0x4"),
             ("TURNSTILE_SECRET", "0x4s"),
-            ("VELIO_BACKUP_DIR", "/data/backups"),
-            ("VELIO_BACKUP_S3_URL", "https://s3.example/b"),
-            ("VELIO_BACKUP_S3_ACCESS_KEY_ID", "k"),
-            ("VELIO_BACKUP_S3_SECRET_ACCESS_KEY", "s"),
         ]);
         let velio_privacy = privacy(&velio).into_string();
-        for words in [
-            "Cloudflare carries traffic",
-            "Resend sends its email.",
-            "Cloudflare runs the check",
-            "a second copy of the nightly backups",
-            "kept 30 days",
-        ] {
+        for words in ["Cloudflare carries traffic", "Resend sends its email.", "Cloudflare runs the check"] {
             assert!(velio_privacy.contains(words), "{words}");
         }
         let velio_security = security(&velio).into_string();

@@ -13,3 +13,6 @@ public/
 *.db
 *.db-wal
 *.db-shm
+
+# Upstream clones to check against (references/README.md)
+references/*/

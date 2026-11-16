@@ -1,38 +1,15 @@
-// Helpers for the tests: requests as a browser with vault.js would send
-// them.
-//
-// These stand in for vault.js with random auth and unlock keys instead of
-// running Argon2id, which would make every sign-up slow. The
-// owner bundle is real, so tests can open it.
+// Helpers for the tests: the website as a browser with htmx uses it, and
+// the API as Nuvio's apps use it.
 
-import {
-  buildChange,
-  DEFAULT_KDF,
-  isSealed,
-  newKey,
-  newOwnerKeys,
-  openOwnerBundle,
-  openState,
-  ownerPublicKeys,
-  readStoredState,
-  sealOwnerBundle,
-  toBase64,
-  type Change,
-  type OpenedState,
-  type OwnerKeys,
-  type OwnerPublicKeys,
-} from "@velio/sync-core";
 import { expect } from "vitest";
-import { env, exports } from "./support/runtime.ts";
+import { lit, send, sql, SITE, value } from "./support/runtime.ts";
 
-export const SITE = "https://velio.tv";
-// With DEV_MODE, links in emails are paths.
-export const worker = exports.default;
+export { SITE };
 
 // A different range in each test file, as rate limits count across them.
 const range = Math.floor(Math.random() * 250);
 let counter = 0;
-/** A fresh email and IP for each test, as rate limits count across tests. */
+/** A fresh email and IP for each test, as rate limits count per address. */
 export const fresh = () => {
   counter++;
   return {
@@ -41,6 +18,10 @@ export const fresh = () => {
   };
 };
 
+export const PASSWORD = "a-test-password-1";
+
+// --- The website ---
+
 export interface Visitor {
   ip: string;
   cookie?: string;
@@ -48,9 +29,8 @@ export interface Visitor {
 
 export const request = (visitor: Visitor, path: string, init: RequestInit = {}) => {
   const headers = new Headers(init.headers);
-  headers.set("cf-connecting-ip", visitor.ip);
   if (visitor.cookie) headers.set("Cookie", visitor.cookie);
-  return worker.fetch(`${SITE}${path}`, { ...init, headers, redirect: "manual" });
+  return send(path, { ...init, headers }, visitor.ip);
 };
 
 export const post = (
@@ -70,146 +50,138 @@ export const post = (
     body: new URLSearchParams(fields),
   });
 
-/** What vault.js sends in place of a new password. */
-export const newCredentials = () => {
-  const authKey = newKey();
-  const unlockKey = newKey();
-  const owner = newOwnerKeys();
-  const publicKeys = ownerPublicKeys(owner);
-  const fields = {
-    salt: toBase64(newKey().subarray(0, 16)),
-    kdf_memory_kib: String(DEFAULT_KDF.memoryKiB),
-    kdf_iterations: String(DEFAULT_KDF.iterations),
-    kdf_parallelism: String(DEFAULT_KDF.parallelism),
-    auth_key: toBase64(authKey),
-    bundle: JSON.stringify(sealOwnerBundle(unlockKey, owner)),
-    sign_public_key: publicKeys.signPublicKey,
-    box_public_key: publicKeys.boxPublicKey,
-  };
-  return { fields, authKey: fields.auth_key, unlockKey, publicKeys, owner };
-};
-export type Credentials = ReturnType<typeof newCredentials>;
+export const lastMail = (to: string) =>
+  sql<{ subject: string; text: string }>(
+    `SELECT subject, text FROM velio_private.dev_outbox WHERE to_address = ${lit(to)} ORDER BY id DESC LIMIT 1`,
+  )[0];
 
-export const lastMail = async (to: string) =>
-  env.DB.prepare("SELECT subject, text FROM dev_outbox WHERE to_address = ? ORDER BY id DESC LIMIT 1")
-    .bind(to)
-    .first<{ subject: string; text: string }>();
-
-export const linkIn = async (to: string, kind: "confirm" | "reset") => {
-  const mail = await lastMail(to);
-  const match = mail?.text.match(new RegExp(`/${kind}/([A-Za-z0-9_-]+)`));
+/** The /verify or /reset link last mailed to the address, as its type and token. */
+export const linkIn = (to: string, kind: "verify" | "reset") => {
+  const match = lastMail(to)?.text.match(new RegExp(`/${kind}\\?([A-Za-z0-9_\\-=&%.]+)`));
   if (!match?.[1]) throw new Error(`No ${kind} link mailed to ${to}`);
-  return match[1];
+  const query = new URLSearchParams(match[1]);
+  return { path: `/${kind}?${match[1]}`, type: query.get("type") ?? "", token: query.get("token") ?? "" };
 };
 
 export const sessionCookie = (response: Response) => {
-  const cookie = response.headers.getSetCookie().find(value => value.startsWith("__Host-velio="));
+  const cookie = response.headers.getSetCookie().find(header => header.startsWith("__Host-velio="));
   if (!cookie) throw new Error("No session cookie");
-  return cookie.split(";")[0];
+  return cookie.split(";")[0] ?? "";
 };
 
-/** The answer's text, with the entities JSX escapes turned back. */
+/** The answer's text, with the entities maud escapes turned back. */
 export const textOf = async (response: Response) =>
-  (await response.text()).replaceAll("&#39;", "'").replaceAll("&quot;", '"').replaceAll("&amp;", "&");
-
-export const signup = (visitor: Visitor, email: string, credentials: Credentials) =>
-  post(visitor, "/signup", { email, terms: "yes", ...credentials.fields });
-
-export const confirm = async (visitor: Visitor, email: string) => {
-  const token = await linkIn(email, "confirm");
-  return post(visitor, `/confirm/${token}`, {});
-};
-
-export const signin = (visitor: Visitor, email: string, authKey: string) =>
-  post(visitor, "/signin", { email, auth_key: authKey });
-
-/** Makes and confirms an account, as most tests start from one. */
-export const confirmedAccount = async () => {
-  const { email, ip } = fresh();
-  const visitor: Visitor = { ip };
-  const credentials = newCredentials();
-  expect((await signup(visitor, email, credentials)).status).toBe(200);
-  expect((await confirm(visitor, email)).status).toBe(200);
-  return { email, visitor, credentials };
-};
-
-/** The owner bundle in a signed-in answer, opened as vault.js would. */
-export const openAnswer = async (response: Response, unlockKey: Uint8Array) => {
-  const body = await response.text();
-  const attribute = (name: string) => {
-    const match = body.match(new RegExp(`${name}="([^"]*)"`));
-    if (!match?.[1]) throw new Error(`No ${name} in the answer`);
-    return match[1].replaceAll("&quot;", '"');
-  };
-  const bundle: unknown = JSON.parse(attribute("data-owner-bundle"));
-  if (!isSealed(bundle)) throw new Error("The owner bundle isn't a Sealed");
-  const expected: OwnerPublicKeys = {
-    signPublicKey: attribute("data-sign-public-key"),
-    boxPublicKey: attribute("data-box-public-key"),
-  };
-  return openOwnerBundle(unlockKey, bundle, expected);
-};
-
-// --- A signed-in browser with vault.js ---
-
-export const unescape = (text: string) =>
-  text
-    .replaceAll("&quot;", '"')
+  (await response.text())
     .replaceAll("&#39;", "'")
+    .replaceAll("&quot;", '"')
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
     .replaceAll("&amp;", "&");
 
-/** The ciphertext a page carries, as vault.js reads it. */
-export const stateIn = (html: string) => {
-  const match = /data-vault-state="([^"]*)"/.exec(html);
-  if (!match?.[1]) throw new Error("No [data-vault-state] on the page");
-  return readStoredState(JSON.parse(unescape(match[1])));
+export const signup = (visitor: Visitor, email: string, password = PASSWORD) =>
+  post(visitor, "/signup", { email, password, password_again: password, terms: "yes" });
+
+/** Opens the link mailed to confirm the email, and presses its button, which signs in. */
+export const confirm = (visitor: Visitor, email: string) => {
+  const { type, token } = linkIn(email, "verify");
+  return post(visitor, "/verify", { type, token });
 };
 
-/** A signed-in browser holding the owner's keys. */
-export interface Browser {
-  visitor: Visitor;
-  accountId: string;
-  owner: OwnerKeys;
+export const signin = (visitor: Visitor, email: string, password = PASSWORD) =>
+  post(visitor, "/signin", { email, password });
+
+export const userIdOf = (email: string) => {
+  const id = value(`SELECT id FROM auth.users WHERE lower(email) = lower(${lit(email)})`);
+  if (typeof id !== "string") throw new Error(`No user for ${email}`);
+  return id;
+};
+
+/** Makes and confirms an account, as most tests start from one; confirming signs the browser in. */
+export const confirmedAccount = async () => {
+  const { email, ip } = fresh();
+  const visitor: Visitor = { ip };
+  expect((await signup(visitor, email)).status).toBe(200);
+  const confirmed = await confirm(visitor, email);
+  expect(confirmed.status).toBe(200);
+  return { email, visitor, confirmed, userId: userIdOf(email) };
+};
+
+/** A confirmed account with a browser signed in to it. */
+export const signedInAccount = async () => {
+  const { email, visitor, confirmed, userId } = await confirmedAccount();
+  const browser: Visitor = { ...visitor, cookie: sessionCookie(confirmed) };
+  /** Another browser, signed in to the same account. */
+  const another = async (): Promise<Visitor> => {
+    const second = await signin({ ip: visitor.ip }, email);
+    expect(second.status).toBe(200);
+    return { ip: visitor.ip, cookie: sessionCookie(second) };
+  };
+  return { email, browser, userId, another };
+};
+
+// --- The API, as Nuvio's apps call it ---
+
+const discovery = await (await send("/.well-known/nuvio")).json<{ publishable_key: string }>();
+/** The key every app sends as `apikey`. */
+export const ANON_KEY = discovery.publishable_key;
+
+export interface ApiCall {
+  method?: string;
+  body?: unknown;
+  /** The user's access token; the anon key without one. */
+  token?: string;
+  ip?: string;
+  headers?: Record<string, string>;
 }
 
-export const signedInAccount = async () => {
-  const { email, visitor, credentials } = await confirmedAccount();
-  const answer = await signin(visitor, email, credentials.authKey);
-  expect(answer.status).toBe(200);
-  const account = await env.DB.prepare("SELECT id FROM accounts WHERE email = ?")
-    .bind(email)
-    .first<{ id: string }>();
-  if (!account) throw new Error("No account");
-  const browser: Browser = {
-    visitor: { ...visitor, cookie: sessionCookie(answer) },
-    accountId: account.id,
-    owner: credentials.owner,
-  };
-  /** Another browser, signed in to the same account. */
-  const another = async (): Promise<Browser> => {
-    const second = await signin({ ip: visitor.ip }, email, credentials.authKey);
-    return { ...browser, visitor: { ip: visitor.ip, cookie: sessionCookie(second) } };
-  };
-  return { email, browser, another, credentials };
-};
+export const api = (path: string, call: ApiCall = {}) =>
+  send(
+    path,
+    {
+      method: call.method ?? (call.body === undefined ? "GET" : "POST"),
+      headers: {
+        apikey: ANON_KEY,
+        Authorization: `Bearer ${call.token ?? ANON_KEY}`,
+        ...(call.body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...call.headers,
+      },
+      body: call.body === undefined ? undefined : JSON.stringify(call.body),
+    },
+    call.ip ?? fresh().ip,
+  );
 
-/** Opens a page as vault.js would. */
-export const openPage = async (browser: Browser, path = "/lists") => {
-  const page = await request(browser.visitor, path);
-  expect(page.status).toBe(200);
-  const html = await page.text();
-  return { html, state: openState(browser.owner, browser.accountId, stateIn(html)) };
-};
+export const rpc = (name: string, args: unknown, token?: string, ip?: string) =>
+  api(`/rest/v1/rpc/${name}`, { body: args, token, ip });
 
-export const send = (browser: Browser, change: Change, next = "/lists") =>
-  post(browser.visitor, "/changes", { change: JSON.stringify(change), next });
+export interface Tokens {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+}
 
-/** Makes an edit on what the page shows and sends it, as vault.js does. */
-export const save = async (browser: Browser, edit: (state: OpenedState) => OpenedState, next = "/lists") => {
-  const { state } = await openPage(browser);
-  const answer = await send(browser, buildChange(browser.owner, state, edit(state)), next);
-  expect(answer.status).toBe(200);
-  return answer;
-};
+/** Signs in as an app does: grant_type=password. */
+export const appSignIn = (email: string, password = PASSWORD, ip?: string) =>
+  api("/auth/v1/token?grant_type=password", { body: { email, password }, ip });
+
+export const refresh = (refreshToken: string, ip?: string) =>
+  api("/auth/v1/token?grant_type=refresh_token", { body: { refresh_token: refreshToken }, ip });
+
+// --- /ops, as the operator calls it ---
+
+export const OPS_TOKEN = "test-ops-token";
+
+/** GET without a body, POST with one; as the operator, unless `token` is given. */
+export const ops = (path: string, body?: unknown, token: string | null = OPS_TOKEN) =>
+  send(
+    `/ops${path}`,
+    {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        ...(token === null ? {} : { Authorization: `Bearer ${token}` }),
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    },
+    fresh().ip,
+  );

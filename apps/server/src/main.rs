@@ -1,9 +1,9 @@
-//! Starts the server: settings from the environment (PLAN.md, "Moving off
-//! Cloudflare", "Configuration"), the database, and the site.
+//! Starts the server: settings from the environment (README, "Configuration"),
+//! the database's migrations, and the site.
 //!
 //! - `velio-server clean-up [--now MS]` runs the daily clean-up once and
 //!   prints how many unconfirmed accounts it deleted (for the tests).
-//! - `velio-server backup` makes the nightly backup now.
+//! - `velio-server migrate` runs the migrations and stops.
 //! - `velio-server health` asks the running server's /healthz, for the
 //!   container's health check: the image has no shell or curl.
 
@@ -13,14 +13,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tracing_subscriber::EnvFilter;
-use velio_server::backup::back_up;
+use velio_server::api::storage::seed_avatars;
 use velio_server::cleanup::{clean_up, spawn_daily};
 use velio_server::config::Config;
 use velio_server::db::Db;
 use velio_server::time::now_ms;
 use velio_server::{AppState, app};
 
-const USAGE: &str = "Usage: velio-server [clean-up [--now MS] | backup | health]";
+const USAGE: &str = "Usage: velio-server [clean-up [--now MS] | migrate | health]";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -41,30 +41,31 @@ async fn main() -> Result<()> {
     }
 
     let cfg = Config::from_env()?;
-    let db = Db::open(&cfg.database)?;
+    let db = Db::connect(&cfg.database_url, cfg.db_pool)?;
+    db.migrate().await.context("Migrating the database")?;
+    set_default_catalog(&db, &cfg.default_catalog_url).await?;
     match args[..] {
         [] => {}
+        ["migrate"] => return Ok(()),
         ["clean-up"] => return run_clean_up(&db, now_ms()).await,
         ["clean-up", "--now", now] => return run_clean_up(&db, now.parse().context("--now takes milliseconds")?).await,
-        ["backup"] => {
-            let backup = cfg.backup.as_ref().context("Set VELIO_BACKUP_DIR to make backups")?;
-            let http = reqwest::Client::new();
-            let done = back_up(&db, backup, &http, now_ms()).await?;
-            println!("{}", done.path.display());
-            return Ok(());
-        }
         _ => bail!(USAGE),
     }
     let listen = cfg.listen;
     if cfg.dev_mode {
         tracing::warn!("DEV_MODE is on: email goes to the dev outbox, and Turnstile is skipped");
     }
-    if cfg.backup.is_none() {
-        tracing::warn!("VELIO_BACKUP_DIR isn't set, so the database isn't backed up");
-    }
 
     let state = AppState::new(cfg, db.clone())?;
-    spawn_daily(db, state.cfg.backup.clone(), state.http.clone());
+    // Nuvio's avatar images, as its seed-avatars.sh puts them in Storage.
+    if let Some(dir) = std::env::var_os("VELIO_AVATAR_DIR") {
+        let added = seed_avatars(&state, std::path::Path::new(&dir)).await.context("Adding the avatars")?;
+        if added > 0 {
+            tracing::info!("Added {added} avatars");
+        }
+    }
+    spawn_daily(db);
+    tokio::task::spawn_blocking(velio_server::api::auth::prepare);
     let listener = tokio::net::TcpListener::bind(listen).await.with_context(|| format!("Listening on {listen}"))?;
     tracing::info!("Listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app(state).into_make_service_with_connect_info::<SocketAddr>())
@@ -75,12 +76,28 @@ async fn main() -> Result<()> {
 }
 
 async fn run_clean_up(db: &Db, now: i64) -> Result<()> {
-    let cleaned = db.call(move |conn| clean_up(conn, now)).await?;
+    let cleaned = clean_up(db, now).await?;
     // The count alone on stdout, for the tests.
     if cleaned.purged > 0 {
         eprintln!("Deleted the data of {} closed accounts", cleaned.purged);
     }
     println!("{}", cleaned.unconfirmed);
+    Ok(())
+}
+
+/// DEFAULT_CATALOG_URL, as Nuvio's `nuvio` script keeps it: the add-on every
+/// new profile starts with.
+async fn set_default_catalog(db: &Db, url: &str) -> Result<()> {
+    db.client()
+        .await?
+        .execute(
+            "INSERT INTO nuvio_private.instance_settings (key, value, updated_at)
+             VALUES ('default_catalog_url', $1, now())
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = now()
+             WHERE nuvio_private.instance_settings.value IS DISTINCT FROM excluded.value",
+            &[&url],
+        )
+        .await?;
     Ok(())
 }
 
@@ -101,7 +118,7 @@ async fn health() -> Result<()> {
     Ok(())
 }
 
-/// Ctrl-C, or SIGTERM from systemd or Docker. Open sockets close; TVs reconnect.
+/// Ctrl-C, or SIGTERM from systemd or Docker.
 async fn shutdown() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;

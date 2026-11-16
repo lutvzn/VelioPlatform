@@ -1,207 +1,127 @@
-// A TV simulated with sync-core, as VelioTV will run it, and the phone
-// signing it in as vault.js does: shared by the pairing and closing tests.
+// A TV signing in as Nuvio's TV app does: it asks for a code
+// (start_tv_login_session), shows its QR code, a signed-in browser approves
+// it on /tv-login, and the TV exchanges the code for a session
+// (tv-logins-exchange), then registers itself (register_current_device).
 
-import {
-  buildChange,
-  fromBase64,
-  isSealed,
-  newOwnerKeys,
-  newPairingSecrets,
-  openDeviceInfo,
-  openPairingPayload,
-  openPull,
-  ownerPublicKeys,
-  pairingCode,
-  pairingProof,
-  pairingUrl,
-  pairRequest,
-  readEvent,
-  readPairingCode,
-  sealPairingPayload,
-  toBase64,
-  withDevice,
-  withList,
-  withProfile,
-  type DeviceTrust,
-  type ListDraft,
-  type PairingKind,
-  type ReadCode,
-} from "@velio/sync-core";
+import { randomBytes } from "node:crypto";
 import { expect } from "vitest";
 import {
+  api,
   fresh,
-  openPage,
   post,
-  save,
-  SITE,
+  request,
+  rpc,
   signedInAccount,
-  unescape,
-  worker,
-  type Browser,
+  SITE,
+  type Tokens,
+  type Visitor,
 } from "./helpers.ts";
 
-export const list = (name: string): ListDraft => ({
-  name,
-  kind: "m3u",
-  url: `http://${name.toLowerCase().replaceAll(" ", "-")}.example.invalid/list.m3u`,
-  refreshHours: 24,
-});
+export interface Tv {
+  ip: string;
+  nonce: string;
+  code: string;
+}
 
-// --- The TV ---
-
-export const tvFetch = (ip: string, path: string, init: RequestInit = {}) => {
-  const headers = new Headers(init.headers);
-  headers.set("cf-connecting-ip", ip);
-  return worker.fetch(`${SITE}${path}`, { ...init, headers });
-};
-
-/** A box key pair, as the TV makes one. */
-export const boxKeys = () => newOwnerKeys().box;
-
-/** A TV that has asked to sign in: its keys, secrets and the pairing the server gave it. */
-export const newTv = async (name = "Living room TV") => {
+/** The TV asks for a code, and gets the page its QR code opens. */
+export const startTvLogin = async (name = "Living room TV"): Promise<Tv & { webUrl: string }> => {
   const { ip } = fresh();
-  const keys = boxKeys();
-  const secrets = newPairingSecrets();
-  const publicKey = toBase64(keys.publicKey);
-  const started = await tvFetch(ip, "/v1/pair", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(pairRequest(secrets, { format: 1, publicKey, name })),
-  });
-  expect(started.status).toBe(201);
-  const { id, pollToken } = await started.json<{ id: string; pollToken: string }>();
-  const poll = (wait = 0) =>
-    tvFetch(ip, `/v1/pair/${id}?wait=${wait}`, { headers: { Authorization: `Bearer ${pollToken}` } });
-  return { ip, keys, secrets, publicKey, id, poll, url: pairingUrl(SITE, id, secrets) };
+  const nonce = randomBytes(16).toString("hex");
+  const started = await rpc(
+    "start_tv_login_session",
+    { p_device_nonce: nonce, p_redirect_base_url: `${SITE}/tv-login`, p_device_name: name },
+    undefined,
+    ip,
+  );
+  expect(started.status).toBe(200);
+  const [row] = await started.json<{ code: string; web_url: string }[]>();
+  if (!row) throw new Error("No code");
+  return { ip, nonce, code: row.code, webUrl: row.web_url };
 };
-export type Tv = Awaited<ReturnType<typeof newTv>>;
 
-/** The TV picks up the sign-in and keeps what it needs to trust pulls. */
-export const pickUp = async (tv: Tv) => {
-  const answer = await tv.poll();
+/**
+ * The TV asks for a code to type as well (start_device_login_session), as
+ * VelioTV does: its QR code opens /link with the code, and the code is
+ * typed there otherwise. It polls and exchanges the device code.
+ */
+export const startDeviceLogin = async (name = "Living room TV") => {
+  const { ip } = fresh();
+  const nonce = randomBytes(16).toString("hex");
+  const started = await rpc(
+    "start_device_login_session",
+    { p_device_nonce: nonce, p_redirect_base_url: `${SITE}/link`, p_device_name: name, p_device_type: "tv" },
+    undefined,
+    ip,
+  );
+  expect(started.status).toBe(200);
+  const [row] = await started.json<
+    {
+      device_code: string;
+      user_code: string;
+      verification_uri: string;
+      verification_uri_complete: string;
+    }[]
+  >();
+  if (!row) throw new Error("No code");
+  return { ip, nonce, code: row.device_code, userCode: row.user_code, row };
+};
+
+/** What the TV's poll says: pending, approved, expired or used. */
+export const poll = async (tv: Tv) => {
+  const answer = await rpc(
+    "poll_tv_login_session",
+    { p_code: tv.code, p_device_nonce: tv.nonce },
+    undefined,
+    tv.ip,
+  );
   expect(answer.status).toBe(200);
-  const done = await answer.json<{
-    status: string;
-    deviceId: string;
-    deviceToken: string;
-    kind: PairingKind;
-    payload: unknown;
-  }>();
-  expect(done.status).toBe("done");
-  if (!isSealed(done.payload)) throw new Error("No payload");
-  const payload = openPairingPayload(done.kind, tv.secrets, done.payload, tv.publicKey);
-  expect(payload.device).toBe(done.deviceId);
-  const trust: DeviceTrust = {
-    account: payload.account,
-    device: payload.device,
-    secretKey: toBase64(tv.keys.secretKey),
-    signPublicKey: payload.signPublicKey,
-    boxPublicKey: payload.boxPublicKey,
-  };
-  return { trust, token: done.deviceToken };
+  return (await answer.json<{ status: string }[]>())[0]?.status;
 };
 
-export const pull = (tv: Tv, token: string, rev?: number) =>
-  tvFetch(tv.ip, "/v1/sync", {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(rev === undefined ? {} : { "If-None-Match": `"${rev}"` }),
+export const exchange = (tv: Tv) =>
+  api("/functions/v1/tv-logins-exchange", { body: { code: tv.code, device_nonce: tv.nonce }, ip: tv.ip });
+
+/** The browser approves the TV's code on /tv-login. */
+export const approve = async (browser: Visitor, tv: Tv) => {
+  const page = await request(browser, `/tv-login?code=${tv.code}`);
+  expect(page.status).toBe(200);
+  return post(browser, "/tv-login", { code: tv.code });
+};
+
+/** A TV signed in and registered, as Nuvio TV does after the exchange. */
+export const signInTv = async (browser: Visitor, name = "Living room TV") => {
+  const tv = await startTvLogin(name);
+  expect((await approve(browser, tv)).status).toBe(200);
+  const exchanged = await exchange(tv);
+  expect(exchanged.status).toBe(200);
+  const tokens = await exchanged.json<Tokens>();
+  const registered = await rpc(
+    "register_current_device",
+    {
+      p_installation_id: `tv-${tv.nonce}`,
+      p_client_name: "Nuvio TV",
+      p_client_version: "test",
+      p_platform: "tv",
+      p_device_name: name,
     },
-  });
-
-// --- The phone ---
-
-export const attribute = (html: string, name: string) => {
-  const match = new RegExp(`${name}="([^"]*)"`).exec(html);
-  if (!match?.[1]) throw new Error(`No ${name} in the answer`);
-  return unescape(match[1]);
+    tokens.access_token,
+    tv.ip,
+  );
+  expect(registered.status).toBe(200);
+  return { ...tv, tokens };
 };
 
-export const codeFor = (tv: Tv, kind: PairingKind): ReadCode => {
-  const code = readPairingCode(kind === "qr" ? tv.url : pairingCode(tv.id, tv.secrets));
-  if (!code) throw new Error("Unreadable code");
-  return code;
-};
-
-export const find = (browser: Browser, code: ReadCode) =>
-  post(browser.visitor, "/pair/find", {
-    id: code.id,
-    kind: code.kind,
-    proof: pairingProof(code.kind, code.secret),
-  });
-
-/** What vault.js does on /pair: find the TV, open its details, and send the change and payload. */
-export const signInTv = async (browser: Browser, tv: Tv, profileIds: string[], kind: PairingKind = "qr") => {
-  const code = codeFor(tv, kind);
-  const found = await find(browser, code);
-  expect(found.status).toBe(200);
-  const html = await found.text();
-  const deviceId = attribute(html, "data-device-id");
-  const info = openDeviceInfo(code, JSON.parse(attribute(html, "data-sealed-device")));
-  expect(info.publicKey).toBe(tv.publicKey);
-  const { state } = await openPage(browser, "/pair");
-  const after = withDevice(state, deviceId, fromBase64(info.publicKey), profileIds, info.name);
-  const payload = sealPairingPayload(code, {
-    format: 1,
-    account: browser.accountId,
-    device: deviceId,
-    devicePublicKey: info.publicKey,
-    ...ownerPublicKeys(browser.owner),
-  });
-  return post(browser.visitor, `/pair/${code.id}`, {
-    change: JSON.stringify(buildChange(browser.owner, state, after)),
-    payload: JSON.stringify(payload),
-    kind: code.kind,
-    proof: pairingProof(code.kind, code.secret),
-  });
-};
-
-/** An account with three profiles, a list for each, and one shared by the first two. */
-export const threeProfiles = async () => {
-  const account = await signedInAccount();
-  const ids: string[] = [];
-  await save(account.browser, state => {
-    let next = state;
-    for (const name of ["Living room", "Kids", "Guest"]) {
-      const made = withProfile(next, { name });
-      ids.push(made.profileId);
-      next = made.state;
-    }
-    next = withList(next, list("Living room list"), [ids[0]]).state;
-    next = withList(next, list("Kids list"), [ids[1]]).state;
-    next = withList(next, list("Guest list"), [ids[2]]).state;
-    return withList(next, list("Shared list"), [ids[0], ids[1]]).state;
-  });
-  return { ...account, ids };
-};
-
-/** Opens the TV's socket and records what arrives. */
-export const connect = async (tv: Tv, protocols: string[] | null) => {
-  const headers: Record<string, string> = { Upgrade: "websocket" };
-  if (protocols) headers["Sec-WebSocket-Protocol"] = protocols.join(", ");
-  const answer = await tvFetch(tv.ip, "/v1/events", { headers });
-  const ws = answer.webSocket;
-  const messages: string[] = [];
-  const closes: number[] = [];
-  if (ws) {
-    ws.accept();
-    ws.addEventListener("message", event => {
-      messages.push(String(event.data));
-    });
-    ws.addEventListener("close", event => {
-      closes.push(event.code);
-    });
-  }
-  const revs = () => messages.map(readEvent).flatMap(event => (event?.type === "rev" ? [event.rev] : []));
-  return { answer, ws, messages, closes, revs };
-};
-
+/** An account with a browser and a TV signed in. */
 export const signedInTv = async () => {
-  const account = await threeProfiles();
-  const tv = await newTv();
-  await signInTv(account.browser, tv, [account.ids[0], account.ids[1]]);
-  const { trust, token } = await pickUp(tv);
-  const view = openPull(trust, await (await pull(tv, token)).json());
-  return { ...account, tv, token, trust, view };
+  const account = await signedInAccount();
+  const tv = await signInTv(account.browser);
+  return { ...account, tv };
 };
+
+/**
+ * Whether the TV is still signed in: its session, as Auth checks it. (Its
+ * access token still reads REST until it expires, as with PostgREST; its
+ * refresh token is what stops working.)
+ */
+export const signedIn = async (tv: Tv & { tokens: Tokens }) =>
+  (await api("/auth/v1/user", { token: tv.tokens.access_token, ip: tv.ip })).status === 200;

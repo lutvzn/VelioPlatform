@@ -4,12 +4,9 @@
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
-!packages/sync-core/package.json
-!packages/sync-core/src
 !apps/server/package.json
 !apps/server/scripts/build-client.mjs
 !apps/server/client
-!apps/server/probe/test-account.json
 !apps/server/Cargo.toml
 !apps/server/Cargo.lock
 !apps/server/src

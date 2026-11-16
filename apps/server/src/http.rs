@@ -1,6 +1,6 @@
-//! What every request goes through (the Worker's `lib/http.ts` and the
-//! middleware in `worker.tsx`): the client's address, headers, body caps,
-//! CORS for /v1, and the Origin check on web forms.
+//! What every request goes through: the client's address, headers, body
+//! caps, and the Origin check on web forms. Nuvio's API (`api`) has its own
+//! CORS and key checks, in `api::gateway`.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -17,12 +17,13 @@ use serde_json::json;
 use crate::AppState;
 use crate::error::ServerError;
 
-/// /v1 for TVs and /ops for the operator: bearer tokens, no cookies, no forms.
+/// Nuvio's API for apps and TVs, and /ops for the operator: bearer tokens,
+/// no cookies, no forms.
 pub fn is_api(path: &str) -> bool {
-    path.starts_with("/v1/") || path.starts_with("/ops/")
+    path.starts_with("/ops/") || crate::api::is_supabase(path)
 }
 
-/// A JSON problem for /v1 and /ops: `{"problem": "…"}`.
+/// A JSON problem for /ops: `{"problem": "…"}`.
 pub fn api_problem(status: StatusCode, problem: &str) -> Response {
     (status, Json(json!({ "problem": problem }))).into_response()
 }
@@ -81,13 +82,12 @@ pub async fn log_requests(req: Request, next: Next) -> Response {
 
 // --- Headers ---
 
-/// 'wasm-unsafe-eval' is for Argon2id (hash-wasm). Turnstile, when it's on,
-/// needs its script and frame.
+/// Turnstile, when it's on, needs its script and frame.
 pub fn csp(turnstile: bool) -> String {
     let challenges = if turnstile { " https://challenges.cloudflare.com" } else { "" };
     [
         "default-src 'self'".to_owned(),
-        format!("script-src 'self' 'wasm-unsafe-eval'{challenges}"),
+        format!("script-src 'self'{challenges}"),
         if turnstile { "frame-src https://challenges.cloudflare.com".into() } else { "frame-src 'none'".into() },
         "connect-src 'self'".into(),
         "img-src 'self' data:".into(),
@@ -109,7 +109,7 @@ pub const PERMISSIONS: &str = "accelerometer=(), camera=(), display-capture=(), 
 pub struct StaticAsset;
 
 pub async fn security_headers(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let api_only = req.uri().path().starts_with("/v1/");
+    let api_only = crate::api::is_supabase(req.uri().path());
     let mut response = next.run(req).await;
     if response.extensions().get::<StaticAsset>().is_some() {
         return response;
@@ -137,7 +137,7 @@ pub async fn security_headers(State(state): State<AppState>, req: Request, next:
         if let Some(csp) = csp {
             headers.insert(header::CONTENT_SECURITY_POLICY, csp);
         }
-        // Pages and fragments carry ciphertext and session state, so nothing is cached.
+        // Pages and fragments carry the account's lists and session state, so nothing is cached.
         headers.entry(header::CACHE_CONTROL).or_insert(HeaderValue::from_static("no-store"));
     }
     response
@@ -146,11 +146,14 @@ pub async fn security_headers(State(state): State<AppState>, req: Request, next:
 /// Errors and panics: the words depend on who asked.
 pub async fn server_errors(req: Request, next: Next) -> Response {
     let api = is_api(req.uri().path());
+    let supabase = crate::api::is_supabase(req.uri().path());
     let response = next.run(req).await;
     if response.extensions().get::<ServerError>().is_none() {
         return response;
     }
-    if api {
+    if supabase {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": "An unexpected error occurred" }))).into_response()
+    } else if api {
         api_problem(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong on the server")
     } else {
         text(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong on the server. Try again in a minute.\n")
@@ -159,15 +162,23 @@ pub async fn server_errors(req: Request, next: Next) -> Response {
 
 // --- Bodies ---
 
-/// The biggest web form is a change of up to 3 MB of JSON, which form
-/// encoding can make longer; /v1 and /ops only take small JSON.
-pub const WEB_BODY: usize = 10 * 1024 * 1024;
-pub const API_BODY: usize = 64 * 1024;
+/// Web forms are small (a list's address and login at most); Nuvio's API
+/// takes a profile's settings or a 5 MB avatar image; /ops takes small JSON.
+pub const WEB_BODY: usize = 1024 * 1024;
+pub const API_BODY: usize = 8 * 1024 * 1024;
+pub const OPS_BODY: usize = 64 * 1024;
 
 /// Bodies are read whole, so their size is capped before any route reads one.
 pub async fn limit_bodies(req: Request, next: Next) -> Response {
-    let api = is_api(req.uri().path());
-    let max = if api { API_BODY } else { WEB_BODY };
+    let path = req.uri().path();
+    let api = is_api(path);
+    let max = if crate::api::is_supabase(path) {
+        API_BODY
+    } else if api {
+        OPS_BODY
+    } else {
+        WEB_BODY
+    };
     let too_big = || {
         if api {
             api_problem(StatusCode::PAYLOAD_TOO_LARGE, "This is too big to send")
@@ -215,38 +226,11 @@ async fn linger(mut body: Body) {
     let _ = tokio::time::timeout(LINGER_TIME, drain).await;
 }
 
-// --- CORS ---
-
-/// TVs call /v1 from their app's own origin, with a bearer token and no cookies.
-pub async fn cors(req: Request, next: Next) -> Response {
-    if !req.uri().path().starts_with("/v1/") {
-        return next.run(req).await;
-    }
-    if req.method() == Method::OPTIONS {
-        let mut response = StatusCode::NO_CONTENT.into_response();
-        let headers = response.headers_mut();
-        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
-        headers.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("86400"));
-        headers
-            .insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET,HEAD,PUT,POST,DELETE,PATCH"));
-        headers.insert(
-            header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("Authorization,Content-Type,If-None-Match"),
-        );
-        return response;
-    }
-    let mut response = next.run(req).await;
-    let headers = response.headers_mut();
-    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
-    headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static("ETag"));
-    response
-}
-
 // --- Forms ---
 
 /// Refuses web form posts from other sites. The session cookie is
 /// SameSite=Strict already; this also covers the forms that need no session,
-/// such as sign-up. /v1 (apps and TVs) and /ops (the operator) take bearer
+/// such as sign-up. Nuvio's API (apps and TVs) and /ops (the operator) take bearer
 /// tokens and no cookies.
 pub async fn same_origin_posts(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let method = req.method();
@@ -309,7 +293,7 @@ mod tests {
     #[test]
     fn csp_names_turnstile_only_when_it_is_on() {
         assert!(!csp(false).contains("challenges.cloudflare.com"));
-        assert!(csp(true).contains("script-src 'self' 'wasm-unsafe-eval' https://challenges.cloudflare.com"));
+        assert!(csp(true).contains("script-src 'self' https://challenges.cloudflare.com"));
         assert!(csp(false).contains("frame-ancestors 'none'"));
     }
 }

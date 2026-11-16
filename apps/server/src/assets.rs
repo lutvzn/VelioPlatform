@@ -1,8 +1,8 @@
-//! /static: what the browser loads (vault.js, ops.js, HTMX, the styles),
+//! /static: what the browser loads (site.js, ops.js, HTMX, the styles),
 //! built from client/ by `scripts/build-client.mjs` and embedded in the binary.
 //! The names have no hash, so browsers check for a new version each time (an
 //! ETag makes that cheap): a page from a new server never runs with an old
-//! vault.js.
+//! site.js.
 
 use axum::Router;
 use axum::extract::{Path, Request};

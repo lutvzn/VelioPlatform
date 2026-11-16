@@ -1,18 +1,23 @@
 //! Web sessions (PLAN.md, "Routes"): a random token in the cookie
-//! `__Host-velio` (HttpOnly, Secure, SameSite=Strict), stored as its SHA-256.
-//! 30 days, renewed on use at most once a day.
+//! `__Host-velio` (HttpOnly, Secure, SameSite=Strict), stored as its SHA-256
+//! in `velio_private.web_sessions`. Each is tied to a session of Supabase
+//! Auth's (`auth.sessions`), the kind Nuvio's apps get, so it shows on the
+//! devices page and ends when that session does. 30 days, renewed on use at
+//! most once a day.
 
 use anyhow::Result;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use rusqlite::{Connection, OptionalExtension, params};
+use deadpool_postgres::GenericClient;
+use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::AppState;
 use crate::error::AppError;
 use crate::http::is_api;
-use crate::time::{DAY_MS, now_ms};
+use crate::time::DAY_MS;
 use crate::tokens::{new_token, sha256};
 
 const COOKIE: &str = "__Host-velio";
@@ -21,8 +26,34 @@ pub const SESSION_MS: i64 = 30 * DAY_MS;
 #[derive(Debug, Clone)]
 pub struct Session {
     pub token_hash: Vec<u8>,
+    /// The user's id, as text.
     pub account_id: String,
+    pub user_id: Uuid,
+    /// The session of Supabase Auth's this one stands on.
+    pub session_id: Uuid,
     pub email: String,
+}
+
+impl Session {
+    /// The claims an access token for this session would carry, so the
+    /// website's queries run as the user, under Nuvio's policies.
+    pub fn claims(&self) -> Value {
+        user_claims(self.user_id, self.session_id, &self.email)
+    }
+}
+
+/// The claims an access token for a user's session carries, as far as
+/// Nuvio's policies and functions read them.
+pub fn user_claims(user_id: Uuid, session_id: Uuid, email: &str) -> Value {
+    json!({
+        "sub": user_id.to_string(),
+        "role": "authenticated",
+        "aud": "authenticated",
+        "email": email,
+        "session_id": session_id.to_string(),
+        "is_anonymous": false,
+        "aal": "aal1",
+    })
 }
 
 /// The session this request came with, if any; set by [`sessions`] on every web request.
@@ -40,21 +71,24 @@ pub fn ended_cookie() -> HeaderValue {
     HeaderValue::from_static("__Host-velio=; Max-Age=0; Path=/; Secure")
 }
 
-/// A new session for the account: its token, for [`session_cookie`].
-pub fn start_session(conn: &Connection, account_id: &str) -> Result<String> {
+/// A new web session on a session of Auth's: its token, for [`session_cookie`].
+pub async fn start_session(db: &impl GenericClient, user_id: Uuid, session_id: Uuid) -> Result<String> {
     let token = new_token();
-    let now = now_ms();
-    conn.execute(
-        "INSERT INTO sessions (token_hash, account_id, created_at, last_used_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-        params![sha256(&token), account_id, now, now, now + SESSION_MS],
-    )?;
+    db.execute(
+        "INSERT INTO velio_private.web_sessions (token_hash, session_id, user_id, expires_at)
+         VALUES ($1, $2, $3, now() + make_interval(secs => $4))",
+        &[&sha256(&token), &session_id, &user_id, &((SESSION_MS / 1000) as f64)],
+    )
+    .await?;
     Ok(token)
 }
 
-/// Deletes a session, such as this browser's before it signs in again or out.
-pub fn drop_session(conn: &Connection, session: Option<&Session>) -> Result<()> {
+/// Ends a session, such as this browser's before it signs in again or out,
+/// with the session of Auth's it stands on.
+pub async fn drop_session(db: &impl GenericClient, session: Option<&Session>) -> Result<()> {
     if let Some(session) = session {
-        conn.execute("DELETE FROM sessions WHERE token_hash = ?", [&session.token_hash])?;
+        db.execute("DELETE FROM auth.sessions WHERE id = $1", &[&session.session_id]).await?;
+        db.execute("DELETE FROM velio_private.web_sessions WHERE token_hash = $1", &[&session.token_hash]).await?;
     }
     Ok(())
 }
@@ -80,13 +114,13 @@ fn sets_session_cookie(response: &Response) -> bool {
 
 /// Reads the session cookie into [`CurrentSession`], renewing it once a day.
 pub async fn sessions(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
-    // Assets need no session, so they cost no query.
+    // Assets and the API need no session, so they cost no query.
     if is_api(req.uri().path()) || req.uri().path().starts_with("/static/") {
         return next.run(req).await;
     }
     let found = match cookie_in(req.headers()) {
         None => None,
-        Some(token) => match state.db.call(move |conn| find_session(conn, token)).await {
+        Some(token) => match find_session(&state, token).await {
             Ok(found) => found,
             Err(error) => return AppError::from(error).into_response(),
         },
@@ -103,29 +137,44 @@ pub async fn sessions(State(state): State<AppState>, mut req: Request, next: Nex
     response
 }
 
-/// The session for a token, and the token again when it was renewed.
-fn find_session(conn: &Connection, token: String) -> Result<Option<(Session, Option<String>)>> {
+/// The session for a token, and the token again when it was renewed. The
+/// user must be confirmed and not banned (a closed account is banned), and
+/// Auth's session must still be there.
+async fn find_session(state: &AppState, token: String) -> Result<Option<(Session, Option<String>)>> {
     let token_hash = sha256(&token);
-    let now = now_ms();
-    let row: Option<(String, i64, String)> = conn
-        .query_row(
-            "SELECT s.account_id, s.last_used_at, a.email FROM sessions s JOIN accounts a ON a.id = s.account_id
-             WHERE s.token_hash = ? AND s.expires_at > ? AND a.closed_at IS NULL AND a.confirmed_at IS NOT NULL",
-            params![token_hash, now],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    let client = state.db.client().await?;
+    let row = client
+        .query_opt(
+            "SELECT w.user_id, w.session_id, coalesce(u.email, ''), w.last_used_at < now() - interval '1 day'
+             FROM velio_private.web_sessions w
+             JOIN auth.users u ON u.id = w.user_id
+             JOIN auth.sessions s ON s.id = w.session_id AND s.user_id = w.user_id
+             WHERE w.token_hash = $1 AND w.expires_at > now()
+               AND (s.not_after IS NULL OR s.not_after > now())
+               AND u.email_confirmed_at IS NOT NULL AND u.deleted_at IS NULL
+               AND NOT coalesce(u.banned_until > now(), false)",
+            &[&token_hash],
         )
-        .optional()?;
-    let Some((account_id, last_used_at, email)) = row else { return Ok(None) };
-    let renewed = if now - last_used_at > DAY_MS {
-        conn.execute(
-            "UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE token_hash = ?",
-            params![now, now + SESSION_MS, token_hash],
-        )?;
+        .await?;
+    let Some(row) = row else { return Ok(None) };
+    let (user_id, session_id, email, stale): (Uuid, Uuid, String, bool) =
+        (row.get(0), row.get(1), row.get(2), row.get(3));
+    let renewed = if stale {
+        client
+            .execute(
+                "UPDATE velio_private.web_sessions SET last_used_at = now(),
+                     expires_at = now() + make_interval(secs => $2) WHERE token_hash = $1",
+                &[&token_hash, &((SESSION_MS / 1000) as f64)],
+            )
+            .await?;
+        // So the devices page shows when the browser was last used.
+        client.execute("UPDATE auth.sessions SET updated_at = now() WHERE id = $1", &[&session_id]).await?;
         Some(token)
     } else {
         None
     };
-    Ok(Some((Session { token_hash, account_id, email }, renewed)))
+    let session = Session { token_hash, account_id: user_id.to_string(), user_id, session_id, email };
+    Ok(Some((session, renewed)))
 }
 
 #[cfg(test)]

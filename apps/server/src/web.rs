@@ -15,6 +15,9 @@ use maud::{Markup, html};
 
 use crate::AppState;
 use crate::accounts::Fields;
+use crate::api::auth::{AuthError, Meta};
+use crate::db::{self, Ctx};
+use crate::error::AppError;
 use crate::http::ClientIp;
 use crate::limits::Limit;
 use crate::session::{CurrentSession, Session};
@@ -22,6 +25,8 @@ use crate::views::layout::{Page, title_tag};
 use crate::views::{accounts, full_page};
 
 pub const TOO_MANY: &str = "Too many tries. Wait a minute, then try again.";
+pub const LINK_GONE: &str = "This link was already used, or it's too old. Ask for a new one.";
+pub const CLOSED: &str = "This account is closed.";
 
 /// What a web handler needs to know about the request.
 pub struct Web {
@@ -30,6 +35,8 @@ pub struct Web {
     /// Sent by HTMX, so the answer is a fragment.
     pub htmx: bool,
     pub ip: IpAddr,
+    /// The IP and browser, which Auth keeps with each session.
+    pub meta: Meta,
 }
 
 impl FromRequestParts<AppState> for Web {
@@ -41,6 +48,7 @@ impl FromRequestParts<AppState> for Web {
             session: parts.extensions.get::<CurrentSession>().and_then(|current| current.0.clone()),
             htmx: parts.headers.get("HX-Request").is_some_and(|value| value == "true"),
             ip: parts.extensions.get::<ClientIp>().map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |client| client.ip),
+            meta: Meta::of(parts.extensions.get::<ClientIp>(), &parts.headers),
         })
     }
 }
@@ -57,6 +65,51 @@ impl Web {
 
     pub fn within(&self, limit: Limit, key: &str) -> bool {
         self.state.limits.within(limit, key)
+    }
+
+    /// Runs `work` in a transaction as the signed-in user, so Nuvio's
+    /// policies and functions decide, as they do for Nuvio's apps. A refusal
+    /// of the database's with words for a person (Nuvio's functions raise
+    /// them) comes back as `Err` of those words; the caller shows it.
+    pub async fn as_user<T>(
+        &self,
+        work: impl AsyncFnOnce(&deadpool_postgres::Transaction<'_>) -> Result<T, tokio_postgres::Error>,
+    ) -> Result<Result<T, String>, AppError> {
+        let Some(session) = &self.session else { return Ok(Err("Sign in first.".into())) };
+        self.as_claims(session.claims(), work).await
+    }
+
+    /// [`Web::as_user`] for a user with these claims, such as one signing in.
+    pub async fn as_claims<T>(
+        &self,
+        claims: serde_json::Value,
+        work: impl AsyncFnOnce(&deadpool_postgres::Transaction<'_>) -> Result<T, tokio_postgres::Error>,
+    ) -> Result<Result<T, String>, AppError> {
+        let mut client = self.state.db.client().await?;
+        let tx = db::begin(&mut client, &Ctx::user(claims)).await?;
+        match work(&tx).await {
+            Ok(value) => {
+                tx.commit().await?;
+                Ok(Ok(value))
+            }
+            Err(error) => match refusal(&error) {
+                Some(words) => {
+                    tracing::debug!(error = ?error.as_db_error(), "The database refused a change");
+                    Ok(Err(words))
+                }
+                None => Err(error.into()),
+            },
+        }
+    }
+
+    /// Auth's refusal, for a form: its words, or a 500 for a failure.
+    pub fn auth_problem(&self, error: &AuthError) -> Result<Response, AppError> {
+        let words = match auth_words(&self.state, error) {
+            Some(words) => words,
+            None => return Err(anyhow::anyhow!("Auth: {} {}", error.code, error.message).into()),
+        };
+        let status = if error.status.is_server_error() { StatusCode::BAD_REQUEST } else { error.status };
+        Ok(self.problem(&words, status))
     }
 
     /// A whole page in the layout.
@@ -93,6 +146,57 @@ impl Web {
     }
 }
 
+/// The words of a database refusal meant for a person: what Nuvio's
+/// functions raise (P0001, 22023, …), a broken check, or a policy's no.
+pub fn refusal(error: &tokio_postgres::Error) -> Option<String> {
+    let db = error.as_db_error()?;
+    let code = db.code().code();
+    match code {
+        "42501" => Some("That isn't yours to change.".into()),
+        "23505" => Some("That's there already.".into()),
+        "23514" | "23502" | "22001" => Some("Something in the form isn't right. Check it and try again.".into()),
+        _ if code.starts_with("P0") || code.starts_with("22") => Some(sentence(db.message())),
+        _ => None,
+    }
+}
+
+/// A message as a sentence: a capital first, and a full stop.
+fn sentence(message: &str) -> String {
+    let message = message.trim();
+    let mut chars = message.chars();
+    let mut text: String = match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => return "That didn't work.".into(),
+    };
+    if !text.ends_with(['.', '!', '?']) {
+        text.push('.');
+    }
+    text
+}
+
+/// Auth's error codes in words for the website's forms; none for a failure.
+pub fn auth_words(state: &AppState, error: &AuthError) -> Option<String> {
+    let min = state.cfg.auth.password_min_length;
+    Some(match error.code {
+        "invalid_credentials" => "That email and password don't match an account.".into(),
+        "email_not_confirmed" => "Confirm your email first, with the link we sent. For a new link, make the account \
+                                  again."
+            .into(),
+        "user_banned" => CLOSED.into(),
+        "over_request_rate_limit" | "over_email_send_rate_limit" => TOO_MANY.into(),
+        "weak_password" => format!("Use at least {min} characters for the password."),
+        "signup_disabled" => "That email can't make an account here.".into(),
+        "user_already_exists" | "email_exists" => "That email already has an account.".into(),
+        "same_password" => "That's the password you have now. Choose another.".into(),
+        "otp_expired" => LINK_GONE.into(),
+        "validation_failed" if error.message.contains("72") => "Use at most 72 characters for the password.".into(),
+        "validation_failed" if error.message.contains("email") => "That doesn't look like an email address.".into(),
+        "validation_failed" => sentence(&error.message),
+        _ if error.status.is_client_error() => sentence(&error.message),
+        _ => return None,
+    })
+}
+
 pub fn fragment(body: Markup) -> Response {
     Html(body.into_string()).into_response()
 }
@@ -112,6 +216,20 @@ fn page_markup(title: &str, body: Markup) -> Markup {
 /// A 302, as Hono's `c.redirect`. (axum's `Redirect::to` is a 303.)
 pub fn found(location: &'static str) -> Response {
     (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
+}
+
+/// A 302 to a place made at run time, such as sign-in with where to go after.
+pub fn found_at(location: &str) -> Response {
+    match HeaderValue::try_from(location) {
+        Ok(value) => (StatusCode::FOUND, [(header::LOCATION, value)]).into_response(),
+        Err(_) => found("/"),
+    }
+}
+
+/// Sign-in, coming back to `path_and_query` after.
+pub fn sign_in_first(path_and_query: &str) -> Response {
+    let next: String = form_urlencoded::byte_serialize(path_and_query.as_bytes()).collect();
+    found_at(&format!("/signin?next={next}"))
 }
 
 pub fn set_header(response: &mut Response, name: &'static str, value: &'static str) {
@@ -135,7 +253,19 @@ impl<S: Send + Sync> FromRequest<S> for Form {
         if !is_form {
             return Ok(Self(Vec::new()));
         }
-        Ok(Self(form_urlencoded::parse(&body).into_owned().collect()))
+        Ok(Self::parse(&body))
+    }
+}
+
+impl Form {
+    /// A form body, as the extractor reads it.
+    pub fn parse(body: &[u8]) -> Self {
+        Self(form_urlencoded::parse(body).into_owned().collect())
+    }
+
+    /// Every value of a repeated field, such as a group of checkboxes.
+    pub fn all(&self, name: &str) -> Vec<&str> {
+        self.0.iter().filter(|(key, _)| key == name).map(|(_, value)| value.as_str()).collect()
     }
 }
 
@@ -148,6 +278,13 @@ impl Fields for Form {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn makes_sentences() {
+        assert_eq!(sentence("invalid or expired TV login code"), "Invalid or expired TV login code.");
+        assert_eq!(sentence("Done!"), "Done!");
+        assert_eq!(sentence(" "), "That didn't work.");
+    }
 
     #[test]
     fn a_page_fragment_carries_its_title_in_a_head() {

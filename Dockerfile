@@ -1,19 +1,18 @@
-# The Velio sync server as a distroless image: one static binary, no shell.
+# The Velio server as a distroless image: one static binary, no shell. It
+# needs a Postgres database (DATABASE_URL), which it migrates on start.
 #
 #   docker build -t velio-server .
 #   docker run -p 8787:8787 -v velio-data:/data --env-file velio.env velio-server
 #
 # See README.md for the settings and putting a reverse proxy in front.
 
-# --- What the browser loads: vault.js, ops.js, HTMX and the styles ---
+# --- What the browser loads: site.js, ops.js, HTMX and the styles ---
 FROM node:26-slim AS client
 WORKDIR /src
 RUN npm install --global --no-fund --no-audit pnpm@12.14.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/server/package.json apps/server/
-COPY packages/sync-core/package.json packages/sync-core/
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@velio/server..."
-COPY packages/sync-core/src packages/sync-core/src
 COPY apps/server/scripts/build-client.mjs apps/server/scripts/
 COPY apps/server/client apps/server/client
 RUN node apps/server/scripts/build-client.mjs
@@ -25,10 +24,8 @@ WORKDIR /src/apps/server
 COPY apps/server/Cargo.toml apps/server/Cargo.lock ./
 COPY apps/server/migrations migrations
 COPY apps/server/src src
-# Embedded in the binary: the static files (src/assets.rs), and the probe's
-# test account (src/routes/probe.rs).
+# Embedded in the binary: the static files (src/assets.rs) and the migrations.
 COPY --from=client /src/apps/server/public/static public/static
-COPY apps/server/probe/test-account.json probe/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/apps/server/target \
     cargo build --release --locked \
@@ -39,9 +36,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=server /out/velio-server /velio-server
 COPY --from=server --chown=nonroot:nonroot /out/data /data
+# /data holds Storage's files (profile pictures); the rest is in Postgres.
 ENV VELIO_LISTEN=0.0.0.0:8787 \
-    VELIO_DATABASE=/data/velio.db \
-    VELIO_BACKUP_DIR=/data/backups
+    VELIO_STORAGE_DIR=/data/storage
 VOLUME ["/data"]
 EXPOSE 8787
 USER nonroot

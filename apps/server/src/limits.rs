@@ -1,8 +1,7 @@
 //! Rate limits, in memory (PLAN.md, "Moving off Cloudflare", "Stack"): the
 //! same limits and keys as the Worker's bindings. One process, so no shared
 //! store is needed. A restart forgets the counts, which only errs toward a
-//! fresh minute; Argon2id on the owner's device is what makes each guess
-//! costly.
+//! fresh minute; bcrypt on the server is what makes each guess costly.
 //!
 //! Each key's window starts at its first request, so a burst can't straddle
 //! two windows to get twice the limit.

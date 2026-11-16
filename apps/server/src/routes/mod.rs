@@ -1,13 +1,12 @@
-//! The routes, by area, as the Worker's `src/routes` were.
+//! The website's routes, by area. Nuvio's API is in `api`.
 
 pub mod accounts;
+pub mod approve;
+pub mod devices;
+pub mod lists;
 pub mod notices;
 pub mod ops;
-pub mod pair;
-pub mod probe;
-pub mod settings;
-pub mod tv;
-pub mod vault;
+pub mod profiles;
 pub mod web;
 
 use axum::http::{StatusCode, Uri};

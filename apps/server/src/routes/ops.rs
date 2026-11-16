@@ -1,6 +1,7 @@
 //! The operator's page and API (the Worker's `routes/opsPage.tsx` and
 //! `routes/ops.ts`; PLAN.md, "Legal and abuse"), used at /ops and by
-//! `scripts/ops.mjs`: notices, and closing and opening accounts.
+//! `scripts/ops.mjs`: notices, closing and opening accounts, and TV limits.
+//! Accounts are Supabase Auth's users; their id is the user's id.
 //! Without OPS_TOKEN set, /ops is a 404.
 //!
 //! Two ways into the API: the secret as a bearer token (the command-line
@@ -32,14 +33,14 @@ use axum::middleware::{Next, from_fn};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use deadpool_postgres::GenericClient;
 use maud::Markup;
-use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
+use uuid::Uuid;
 
 use crate::AppState;
-use crate::accounts::{Fields, find_account, find_account_by_id, normalize_email};
-use crate::closing::{MAX_REASON_LENGTH, close_account, reopen_account};
+use crate::accounts::{Fields, normalize_email};
+use crate::closing::{ACCOUNTS, MAX_REASON_LENGTH, close_account, reopen_account, rows_json};
 use crate::config::TvLimits;
 use crate::error::AppError;
 use crate::http::{ClientIp, api_problem, from_this_site};
@@ -175,44 +176,26 @@ fn js_length(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
-/// Rows as JSON objects, keyed by column, as D1's `all()` answers them.
-fn rows_json(conn: &Connection, sql: &str, params: impl Params) -> Result<Vec<Value>> {
-    let mut statement = conn.prepare(sql)?;
-    let names: Vec<String> = statement.column_names().map(str::to_owned).collect();
-    let rows = statement.query_map(params, |row| {
-        let mut object = Map::new();
-        for (index, name) in names.iter().enumerate() {
-            let value = match row.get_ref(index)? {
-                ValueRef::Null => Value::Null,
-                ValueRef::Integer(number) => number.into(),
-                ValueRef::Real(number) => number.into(),
-                ValueRef::Text(bytes) | ValueRef::Blob(bytes) => String::from_utf8_lossy(bytes).into(),
-            };
-            object.insert(name.clone(), value);
-        }
-        Ok(Value::Object(object))
-    })?;
-    Ok(rows.collect::<Result<_, _>>()?)
-}
-
 /// The account's state and its notices, for deciding (the repeat-infringer policy counts them).
 /// `tv_limit` is what the operator gave it, or null; `tv_limits` the default, the most that can be given, and what holds now.
-fn account_summary(conn: &Connection, account_id: &str, tv_limits: TvLimits) -> Result<Option<Value>> {
+async fn account_summary(db: &impl GenericClient, user_id: Uuid, tv_limits: TvLimits) -> Result<Option<Value>> {
     let account = rows_json(
-        conn,
-        "SELECT id, email, created_at, confirmed_at, closed_at, closed_reason, purged_at, tv_limit
-         FROM accounts WHERE id = ?",
-        [account_id],
-    )?;
+        db,
+        &format!(
+            "SELECT a.*, (SELECT count(*) FROM velio_private.tv_sessions t WHERE t.user_id = a.id) AS devices
+             FROM {ACCOUNTS} a WHERE a.id = $1"
+        ),
+        &[&user_id],
+    )
+    .await?;
     let Some(Value::Object(mut summary)) = account.into_iter().next() else { return Ok(None) };
-    let devices: i64 =
-        conn.query_row("SELECT count(*) FROM devices WHERE account_id = ?", [account_id], |row| row.get(0))?;
     let notices = rows_json(
-        conn,
-        "SELECT id, received_at, kind, status, action FROM notices WHERE account_id = ? ORDER BY received_at",
-        [account_id],
-    )?;
-    summary.insert("devices".into(), devices.into());
+        db,
+        "SELECT id, received_at, kind, status, action FROM velio_private.notices WHERE account_id = $1
+         ORDER BY received_at",
+        &[&user_id],
+    )
+    .await?;
     let allowed = tv_limits.for_account(summary.get("tv_limit").and_then(Value::as_i64));
     summary
         .insert("tv_limits".into(), json!({ "default": tv_limits.default, "max": tv_limits.max, "allowed": allowed }));
@@ -220,43 +203,36 @@ fn account_summary(conn: &Connection, account_id: &str, tv_limits: TvLimits) -> 
     Ok(Some(Value::Object(summary)))
 }
 
+/// An account's id from the path, which is a user's id.
+fn user_id(id: &str) -> Option<Uuid> {
+    id.parse().ok()
+}
+
 async fn list_notices(_: Operator, web: Web, Query(query): Query<HashMap<String, String>>) -> Answer {
     let status = query.get("status").map_or("open", String::as_str).to_owned();
     if !matches!(status.as_str(), "all" | "open" | "actioned" | "rejected") {
         return Ok(problem(StatusCode::BAD_REQUEST, "Unknown status"));
     }
-    let notices = web
-        .state
-        .db
-        .call(move |conn| {
-            rows_json(
-                conn,
-                "SELECT id, received_at, kind, name, email, account_email, account_id, status FROM notices
-                 WHERE ? = 'all' OR status = ? ORDER BY received_at DESC LIMIT 200",
-                params![status, status],
-            )
-        })
-        .await?;
+    let client = web.state.db.client().await?;
+    let notices = rows_json(
+        &client,
+        "SELECT id, received_at, kind, name, email, account_email, account_id, status FROM velio_private.notices
+         WHERE $1 = 'all' OR status = $1 ORDER BY received_at DESC LIMIT 200",
+        &[&status],
+    )
+    .await?;
     Ok(Json(json!({ "notices": notices })).into_response())
 }
 
 async fn show_notice(_: Operator, web: Web, Path(id): Path<String>) -> Answer {
     let tv_limits = web.state.cfg.tv_limits;
-    let found = web
-        .state
-        .db
-        .call(move |conn| {
-            let Some(notice) = rows_json(conn, "SELECT * FROM notices WHERE id = ?", [&id])?.into_iter().next() else {
-                return Ok(None);
-            };
-            let account = match notice.get("account_id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
-                Some(account_id) => account_summary(conn, account_id, tv_limits)?,
-                None => None,
-            };
-            Ok(Some((notice, account)))
-        })
-        .await?;
-    let Some((notice, account)) = found else { return Ok(problem(StatusCode::NOT_FOUND, "No such notice")) };
+    let client = web.state.db.client().await?;
+    let found = rows_json(&client, "SELECT * FROM velio_private.notices WHERE id = $1", &[&id]).await?;
+    let Some(notice) = found.into_iter().next() else { return Ok(problem(StatusCode::NOT_FOUND, "No such notice")) };
+    let account = match notice.get("account_id").and_then(Value::as_str).and_then(user_id) {
+        Some(account_id) => account_summary(&client, account_id, tv_limits).await?,
+        None => None,
+    };
     Ok(Json(json!({ "notice": notice, "account": account })).into_response())
 }
 
@@ -269,15 +245,12 @@ async fn handle_notice(_: Operator, web: Web, Path(id): Path<String>, body: Byte
     if action.is_empty() || js_length(&action) > MAX_REASON_LENGTH {
         return Ok(problem(StatusCode::BAD_REQUEST, "Say what was done (action)"));
     }
-    let changed = web
-        .state
-        .db
-        .call(move |conn| {
-            Ok(conn.execute(
-                "UPDATE notices SET status = ?, action = ?, handled_at = ? WHERE id = ?",
-                params![status, action, now_ms(), id],
-            )?)
-        })
+    let client = web.state.db.client().await?;
+    let changed = client
+        .execute(
+            "UPDATE velio_private.notices SET status = $1, action = $2, handled_at = $3 WHERE id = $4",
+            &[&status, &action, &now_ms(), &id],
+        )
         .await?;
     if changed != 1 {
         return Ok(problem(StatusCode::NOT_FOUND, "No such notice"));
@@ -300,36 +273,31 @@ async fn list_accounts(_: Operator, web: Web, Query(query): Query<HashMap<String
     if js_length(&search) > MAX_SEARCH_LENGTH {
         return Ok(problem(StatusCode::BAD_REQUEST, "That search is too long"));
     }
-    // Emails are kept in lower case; % and _ are literal here.
+    // % and _ are literal here.
     let pattern = search.to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     let tv_limits = web.state.cfg.tv_limits;
-    let (accounts, total) = web
-        .state
-        .db
-        .call(move |conn| {
-            const MATCHING: &str = "FROM accounts a
-                 WHERE (?1 = 'all'
-                        OR (?1 = 'open' AND a.closed_at IS NULL AND a.confirmed_at IS NOT NULL)
-                        OR (?1 = 'unconfirmed' AND a.closed_at IS NULL AND a.confirmed_at IS NULL)
-                        OR (?1 = 'closed' AND a.closed_at IS NOT NULL))
-                   AND (?2 = '' OR a.id = ?2 OR a.email LIKE '%' || ?3 || '%' ESCAPE '\\')";
-            let total: i64 =
-                conn.query_row(&format!("SELECT count(*) {MATCHING}"), params![state, search, pattern], |row| {
-                    row.get(0)
-                })?;
-            let accounts = rows_json(
-                conn,
-                &format!(
-                    "SELECT a.id, a.email, a.created_at, a.confirmed_at, a.closed_at, a.purged_at, a.tv_limit,
-                       (SELECT count(*) FROM devices d WHERE d.account_id = a.id) AS devices,
-                       (SELECT count(*) FROM notices n WHERE n.account_id = a.id) AS notice_count
-                     {MATCHING} ORDER BY a.created_at DESC, a.id LIMIT ?4"
-                ),
-                params![state, search, pattern, ACCOUNT_PAGE],
-            )?;
-            Ok((accounts, total))
-        })
-        .await?;
+    let matching = format!(
+        "FROM {ACCOUNTS} a
+         WHERE ($1 = 'all'
+                OR ($1 = 'open' AND a.closed_at IS NULL AND a.confirmed_at IS NOT NULL)
+                OR ($1 = 'unconfirmed' AND a.closed_at IS NULL AND a.confirmed_at IS NULL)
+                OR ($1 = 'closed' AND a.closed_at IS NOT NULL))
+           AND ($2 = '' OR a.id::text = $2 OR lower(a.email) LIKE '%' || $3 || '%' ESCAPE '\\')"
+    );
+    let client = web.state.db.client().await?;
+    let total: i64 =
+        client.query_one(&format!("SELECT count(*) {matching}"), &[&state, &search, &pattern]).await?.get(0);
+    let accounts = rows_json(
+        &client,
+        &format!(
+            "SELECT a.*,
+               (SELECT count(*) FROM velio_private.tv_sessions t WHERE t.user_id = a.id) AS devices,
+               (SELECT count(*) FROM velio_private.notices n WHERE n.account_id = a.id) AS notice_count
+             {matching} ORDER BY a.created_at DESC NULLS LAST, a.id LIMIT $4"
+        ),
+        &[&state, &search, &pattern, &ACCOUNT_PAGE],
+    )
+    .await?;
     let accounts: Vec<Value> = accounts
         .into_iter()
         .map(|mut account| {
@@ -344,16 +312,24 @@ async fn list_accounts(_: Operator, web: Web, Query(query): Query<HashMap<String
     Ok(Json(json!({ "accounts": accounts, "total": total, "tv_limits": tv_limits })).into_response())
 }
 
+/// An account by its id or its email.
+async fn find_id(db: &impl GenericClient, key: &str) -> Result<Option<Uuid>> {
+    if !key.contains('@') {
+        return Ok(user_id(key));
+    }
+    let row = db
+        .query_opt(&format!("SELECT id FROM {ACCOUNTS} a WHERE lower(a.email) = $1"), &[&normalize_email(key)])
+        .await?;
+    Ok(row.map(|row| row.get(0)))
+}
+
 async fn show_account(_: Operator, web: Web, Path(key): Path<String>) -> Answer {
     let tv_limits = web.state.cfg.tv_limits;
-    let summary = web
-        .state
-        .db
-        .call(move |conn| {
-            let found = if key.contains('@') { find_account(conn, &normalize_email(&key))? } else { None };
-            account_summary(conn, found.as_ref().map_or(&key, |account| &account.id), tv_limits)
-        })
-        .await?;
+    let client = web.state.db.client().await?;
+    let summary = match find_id(&client, &key).await? {
+        Some(id) => account_summary(&client, id, tv_limits).await?,
+        None => None,
+    };
     let Some(account) = summary else { return Ok(problem(StatusCode::NOT_FOUND, "No such account")) };
     Ok(Json(json!({ "account": account })).into_response())
 }
@@ -367,48 +343,30 @@ async fn close(_: Operator, web: Web, Path(id): Path<String>, body: Bytes) -> An
         return Ok(problem(StatusCode::BAD_REQUEST, "Give the reason the owner will read (reason)"));
     }
     let confirm = normalize_email(text(&body, "confirm"));
-    let (account, known_notice) = web
-        .state
-        .db
-        .call({
-            let (id, notice) = (id.clone(), notice.clone());
-            move |conn| {
-                let known = notice.is_empty()
-                    || conn
-                        .query_row("SELECT 1 FROM notices WHERE id = ?", [&notice], |_| Ok(()))
-                        .optional()?
-                        .is_some();
-                Ok((find_account_by_id(conn, &id)?, known))
-            }
-        })
-        .await?;
-    let Some(account) = account else { return Ok(problem(StatusCode::NOT_FOUND, "No such account")) };
+    let Some(id) = user_id(&id) else { return Ok(problem(StatusCode::NOT_FOUND, "No such account")) };
+    let mut client = web.state.db.client().await?;
+    let email: Option<String> = client
+        .query_opt("SELECT lower(coalesce(email, '')) FROM auth.users WHERE id = $1", &[&id])
+        .await?
+        .map(|row| row.get(0));
+    let Some(email) = email else { return Ok(problem(StatusCode::NOT_FOUND, "No such account")) };
     // The account's email typed again, so a slip of the id can't close another account.
-    if confirm != account.email {
+    if confirm != email {
         let text = "The email typed doesn't match this account (confirm). Nothing was changed.";
         return Ok(problem(StatusCode::BAD_REQUEST, text));
     }
+    let known_notice = notice.is_empty()
+        || client.query_opt("SELECT 1 FROM velio_private.notices WHERE id = $1", &[&notice]).await?.is_some();
     if !known_notice {
         return Ok(problem(StatusCode::NOT_FOUND, "No such notice"));
     }
 
     let now = now_ms();
-    let closed = web
-        .state
-        .db
-        .call({
-            let (id, reason) = (id.clone(), reason.clone());
-            move |conn| {
-                close_account(conn, &id, &reason, Some(notice.as_str()).filter(|notice| !notice.is_empty()), now)
-            }
-        })
-        .await?;
-    let email = match closed {
+    let notice = Some(notice.as_str()).filter(|notice| !notice.is_empty());
+    let email = match close_account(&mut client, id, &reason, notice, now).await? {
         Ok(email) => email,
         Err((status, text)) => return Ok(problem(status, text)),
     };
-    // TVs' pulls and new sockets are refused from here (tv.rs checks closed_at); open sockets end now.
-    web.state.sockets.close_account(&id);
     let delete_at = now + crate::closing::CLOSED_KEEP_MS;
     let cfg = &web.state.cfg;
     mail::send(&web.state, closed_mail(&cfg.site_url, &email, &cfg.abuse_email, &reason, delete_at)).await?;
@@ -416,8 +374,9 @@ async fn close(_: Operator, web: Web, Path(id): Path<String>, body: Bytes) -> An
 }
 
 async fn reopen(_: Operator, web: Web, Path(id): Path<String>) -> Answer {
-    let opened = web.state.db.call(move |conn| reopen_account(conn, &id)).await?;
-    let email = match opened {
+    let Some(id) = user_id(&id) else { return Ok(problem(StatusCode::NOT_FOUND, "No such account")) };
+    let mut client = web.state.db.client().await?;
+    let email = match reopen_account(&mut client, id).await? {
         Ok(email) => email,
         Err((status, text)) => return Ok(problem(status, text)),
     };
@@ -442,22 +401,30 @@ async fn set_tv_limit(_: Operator, web: Web, Path(id): Path<String>, body: Bytes
         },
         None => return Ok(problem(StatusCode::BAD_REQUEST, "limit: a number of TVs, or null for the default")),
     };
-    let summary = web
-        .state
-        .db
-        .call(move |conn| {
-            // The default is kept as none, so a later VELIO_TV_LIMIT holds for the account too.
-            let stored = limit.filter(|n| *n != tv_limits.default).map(|n| n as i64);
-            if conn
-                .execute("UPDATE accounts SET tv_limit = ? WHERE id = ? AND purged_at IS NULL", params![stored, id])?
-                != 1
-            {
-                return Ok(None);
-            }
-            tracing::info!("TV limit for {id}: {}", stored.map_or("the default".into(), |n| n.to_string()));
-            account_summary(conn, &id, tv_limits)
-        })
-        .await?;
-    let Some(account) = summary else { return Ok(problem(StatusCode::NOT_FOUND, "No such account")) };
+    let Some(id) = user_id(&id) else { return Ok(problem(StatusCode::NOT_FOUND, "No such account")) };
+    let client = web.state.db.client().await?;
+    if client.query_opt("SELECT 1 FROM auth.users WHERE id = $1", &[&id]).await?.is_none() {
+        return Ok(problem(StatusCode::NOT_FOUND, "No such account"));
+    }
+    // The default is kept as none, so a later VELIO_TV_LIMIT holds for the account too.
+    match limit.filter(|n| *n != tv_limits.default).map(|n| n as i32) {
+        Some(stored) => {
+            client
+                .execute(
+                    "INSERT INTO velio_private.tv_limits (user_id, tv_limit) VALUES ($1, $2)
+                     ON CONFLICT (user_id) DO UPDATE SET tv_limit = excluded.tv_limit",
+                    &[&id, &stored],
+                )
+                .await?;
+            tracing::info!("TV limit for {id}: {stored}");
+        }
+        None => {
+            client.execute("DELETE FROM velio_private.tv_limits WHERE user_id = $1", &[&id]).await?;
+            tracing::info!("TV limit for {id}: the default");
+        }
+    }
+    let Some(account) = account_summary(&client, id, tv_limits).await? else {
+        return Ok(problem(StatusCode::NOT_FOUND, "No such account"));
+    };
     Ok(Json(json!({ "ok": true, "account": account })).into_response())
 }

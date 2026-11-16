@@ -842,7 +842,7 @@ details form {
   background: color-mix(in srgb, var(--problem) 16%, var(--surface));
 }
 
-/* --- Profile pictures: vault.js sets the colour from sync-core's PROFILE_COLORS, through the CSSOM. --- */
+/* --- Profile pictures: site.ts sets each one's colour from its data-color, through the CSSOM. --- */
 
 .pic {
   display: inline-flex;

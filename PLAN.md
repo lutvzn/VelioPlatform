@@ -1,13 +1,14 @@
-# Velio Sync plan: end-to-end encrypted sources for VelioTV
+# Velio plan: accounts, profiles and lists for VelioTV, on a Nuvio-compatible server
 
-**One account holds the user's M3U and Xtream lists and their profiles. The owner edits them on the web, encrypted on their own device, and every VelioTV signed in to the account pulls the lists its profiles may use.** The server stores only ciphertext. It never sees a playlist URL, an Xtream server, a username or a password, and so can't be at fault for what they hold.
+**One account holds the user's M3U and Xtream lists, their profiles and their add-ons. The owner edits them on the web, and every VelioTV signed in to the account pulls what its profile may use.** Since 2026-11-15 the server speaks Nuvio's API on Nuvio's own database schema, so a Nuvio app can use it in place of Nuvio's server, and VelioTV uses the same endpoints. End-to-end encryption is dropped: the server stores what the owner types, as Nuvio's does ("Nuvio compatibility").
 
 Typing an Xtream login with a TV remote is the slowest part of setting up VelioTV. With sync, the user types it once on a phone or computer, and each TV signs in by scanning a QR code.
 
-Status: Phase 1 (accounts) built and deployed to velio.tv, 2026-11-10. Phase 2 (profiles and lists) built, tested and deployed, 2026-11-10. Phase 3's server half (signing in TVs, `/v1/sync`) built, tested and deployed, 2026-11-10. Phase 4's web half (profile pictures and PINs) and Phase 5's server half (live updates) built, tested and deployed, 2026-11-10. Phase 6's server and web half (the TVs page, the password, the recovery key, deleting the account) built, tested and deployed, 2026-11-10. Phase 7's server and web half (security review and fixes, headers, list export, docs) built, tested and deployed, 2026-11-10. Phase 8's server and web half (notices, closing accounts, the terms and privacy drafts) built, tested and deployed, 2026-11-10, with `POST /v1/signout` for TVs; `OPS_TOKEN` set; the lawyer's review and the DMCA agent are the user's. VelioTV's half is planned in `../VelioTV/SYNC-PLAN.md`. The VelioTV halves of Phases 3 to 6 wait until the server side of every phase is done (the user's choice, 2026-11-10). Phase 0 has two items left (see its results). **2026-11-13: the server moves off Cloudflare** to a self-hostable Rust server with SQLite ("Moving off Cloudflare"); the Worker keeps serving velio.tv until the Rust server passes the same tests.
+Status: Phase 1 (accounts) built and deployed to velio.tv, 2026-11-10. Phase 2 (profiles and lists) built, tested and deployed, 2026-11-10. Phase 3's server half (signing in TVs, `/v1/sync`) built, tested and deployed, 2026-11-10. Phase 4's web half (profile pictures and PINs) and Phase 5's server half (live updates) built, tested and deployed, 2026-11-10. Phase 6's server and web half (the TVs page, the password, the recovery key, deleting the account) built, tested and deployed, 2026-11-10. Phase 7's server and web half (security review and fixes, headers, list export, docs) built, tested and deployed, 2026-11-10. Phase 8's server and web half (notices, closing accounts, the terms and privacy drafts) built, tested and deployed, 2026-11-10, with `POST /v1/signout` for TVs; `OPS_TOKEN` set; the lawyer's review and the DMCA agent are the user's. VelioTV's half is planned in `../VelioTV/SYNC-PLAN.md`. The VelioTV halves of Phases 3 to 6 wait until the server side of every phase is done (the user's choice, 2026-11-10). Phase 0 has two items left (see its results). **2026-11-13: the server moves off Cloudflare** to a self-hostable Rust server with SQLite ("Moving off Cloudflare"); the Worker keeps serving velio.tv until the Rust server passes the same tests. **2026-11-15: the server becomes Nuvio-compatible**, on Postgres with Nuvio's schema, and end-to-end encryption is dropped ("Nuvio compatibility"). The sections between describe the encrypted design it replaced, kept as history.
 
 ## Decided by the user
 
+- **Nuvio-compatible** (2026-11-15): a Nuvio client must be able to connect to the Velio server instead of Nuvio's, for at least 90% of what it does. The server serves Nuvio's endpoints with their behaviour, on **Nuvio's database schema, unchanged**, which needs **Postgres**. VelioTV uses those endpoints. **End-to-end encryption is dropped.** Nuvio's code to check against is in `references/`. This replaces the encryption and SQLite decisions below.
 - **Hosting:** ~~Cloudflare Workers~~ a **self-hostable Rust server with SQLite** (2026-11-13), the same design: lists stored encrypted, the server holding only ciphertext. See "Moving off Cloudflare". **Web UI:** HTMX 4.
 - **End-to-end encrypted**, and **the login is the key**: no separate PIN or key to unlock the lists (2026-11-10). A PIN alone would be too few guesses to protect a copied database.
 - **Account-wide**, with **profiles**: an account has several profiles, and the owner decides which profiles can use each list (2026-11-10).
@@ -827,6 +828,87 @@ Phase 0's certificate question stays closed for velio.tv: behind the tunnel, TVs
 **R6, the repo half, 2026-11-14.** The root `Dockerfile` builds the client with pnpm (`node:26-slim`), the server on `rust:1.99-alpine` (musl, so the binary is static), and copies the binary into `gcr.io/distroless/static-debian13:nonroot` with `/data` as a volume. `.dockerignore` lets in only the sources it needs, so `.dev.vars` and `PRIVATE.md` never reach a build. In the server: `backup.rs` (the nightly copy, pruning, and the S3 upload, its signing checked against AWS's documented example), `VELIO_TRUSTED_PROXY` as ranges (a proxy container's address isn't fixed), `/healthz` and `velio-server health`, and `/privacy` and `/security` built from the settings. The tests and the stand-in stay in `apps/sync/test` until `apps/sync` is deleted, as do the client sources the image builds from.
 
 **`apps/sync` deleted, 2026-11-14**, before velio.tv moved, at the user's choice. What the Rust server still used moved to `apps/server` (the package `@velio/server`): the client sources to `client/`, `build-client.mjs` (now writing `public/static` only, without the Workers `_headers`), `ops.mjs` and `make-test-account.ts` to `scripts/`, the probe's test account to `probe/`, and the tests to `e2e/` with `vitest.config.ts`. The two Rust-only files are `.test.ts` now. The tests import their helpers by name (`e2e/support/`: `runtime.ts` for `env.DB` and `exports.default.fetch`, `account.ts`, `cleanup.ts`, `constants.ts`, `opsSession.ts`) instead of through `cloudflare:*` aliases, and the three constants they took from the Worker are copied from the Rust source. `pnpm check` runs `check:rust` (the client build first, as the binary embeds it), then every package's tests: 85 against the server. wrangler, workerd and the Workers vitest pool are gone from the lockfile. The Worker on velio.tv, its D1 database and Durable Objects are untouched, and it can only be redeployed from git history (3176ac7 or earlier).
+
+## Nuvio compatibility (2026-11-15)
+
+The user's choice: a Nuvio app pointed at the Velio server works as it does with Nuvio's, and VelioTV moves to the same endpoints. Nuvio's self-host (`references/self-host`) runs Supabase (Kong, GoTrue, PostgREST, Storage, edge functions) on Postgres; the Velio server is one Rust binary that answers the same way, on the same schema.
+
+### What it serves
+
+| Path                 | As Nuvio's                                  | What's there                                                                                                                                                                                              |
+| -------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/.well-known/nuvio` | the discovery document                      | the backend URL (`VELIO_SITE_URL`) and the publishable key                                                                                                                                                |
+| `/auth/v1`           | GoTrue v2.189 (`references/gotrue`)         | sign-up, guests, password and refresh grants (tokens turn; one used twice ends its session), the user, sign-out (local, global, others), recovery, email links, JWKS                                      |
+| `/rest/v1`           | PostgREST v12                               | what Supabase's client libraries send: columns, filters with `or`/`and`/`not`, order, limits and ranges, upserts, `Prefer`, single objects, RPCs. Not embedded resources, which Nuvio's clients don't use |
+| `/storage/v1`        | Supabase Storage (`references/storage-api`) | objects as rows of `storage.objects`, bytes on disk (`VELIO_STORAGE_DIR`); Nuvio's 41 avatars                                                                                                             |
+| `/functions/v1`      | Nuvio's edge functions                      | `tv-logins-exchange`, `tracker-tv-logins-exchange`, `delete-account`, `health-check`                                                                                                                      |
+
+Every call runs inside a transaction as the caller's role (`anon`, `authenticated` or `service_role`) with `request.jwt.claims`, the headers, method and path set as PostgREST sets them, so Nuvio's row-level policies, grants and `auth.uid()` decide. API keys follow Kong's rules: the legacy `ANON_KEY` and `SERVICE_ROLE_KEY`, and the newer `sb_publishable_` and `sb_secret_` keys.
+
+### Data
+
+Postgres, 17 or newer, migrated on start:
+
+1. `0000_supabase_roles`: the roles and extensions Supabase's image has.
+2. `0001_gotrue`: GoTrue's own migrations, rendered for the `auth` schema; `0002_storage`: Storage's.
+3. `migrations/nuvio/*`: Nuvio's migrations, copied unchanged. `scripts/supabase-migrations.mjs --check` fails if they drift from `references/`.
+4. `0003_velio`: Velio's additions, beside Nuvio's schema and never in it. `public.velio_iptv_lists` (M3U and Xtream lists, at most 50 an account, each for every profile or for some) and `velio_pull_iptv_lists(p_profile_id)`, which a TV reads; and `velio_private`: notices, closed accounts, TV limits, the TVs signed in with a code, the website's sessions and `DEV_MODE`'s outbox.
+
+Nuvio's baseline is a `pg_dump`, which sets `row_security = off` and more for its session: the runner resets each file's settings and throws away the connection that ran them, so it never serves a request (it had made every write fail its policy check).
+
+### The website
+
+On the same tables and RPCs, as the signed-in user, through GoTrue sessions (a sign-in on the website is a GoTrue session like an app's, in a `__Host-velio` cookie). Accounts start with no profiles; the first one made is profile 1, the main one. Profiles (with PINs and colours), add-ons per profile (`stremio://` read as `https://`), lists, the devices page, approving a TV's QR code at `/tv-login`, `/abuse`, and `/ops`.
+
+### TVs
+
+A TV signs in as Nuvio TV does: `start_tv_login_session` gives it a code and the page its QR code opens (`{site}/tv-login`), a signed-in browser approves it, and the TV calls `tv-logins-exchange` for a session of its own, then `register_current_device`. `start_device_login_session` also gives a six-character code to type at `{site}/link`, which VelioTV shows beside its QR code. Velio adds its TV limit (default 10, at most 50, set per account on `/ops`), counted from `velio_private.tv_sessions`: apps and browsers don't count.
+
+### Closing accounts
+
+Closing bans the GoTrue user and ends its sessions; reopening unbans it within 30 days; the daily clean-up then deletes the user, and with it Nuvio's data through its foreign keys, keeping the `closed_accounts` row. The clean-up also deletes accounts left unconfirmed for 7 days.
+
+### Removed
+
+The vault and `sync-core` (keys, sealing, signing, the manifest, pairing), `/v1` for TVs, the WebSocket events, the probe, backups (Postgres's own now), and SQLite.
+
+### Checking it matches
+
+- `e2e/`: the server binary against a throwaway Postgres: accounts, TVs, profiles and lists, notices, `/ops`, hardening.
+- `smoke/`: Nuvio's own smoke tests (discovery, sign-up, security, workflows), ported from its self-host and run in `e2e/nuvio.test.ts` against a second server that confirms sign-ups at once, as they need.
+
+### Left
+
+- VelioTV moved to these endpoints on 2026-11-16 (its `PLAN.md`, "The account on Nuvio's API"): the QR code and typed code, refresh tokens, `register_current_device` as "Velio TV", profiles from `sync_pull_profiles`, add-ons from `public.addons`, lists from the `velio_iptv_lists` table, PINs by `verify_profile_pin`, and polling instead of the WebSocket. The TV has no password sign-in. It was run once against this server's e2e setup; a run on the test TV is left.
+- Moving velio.tv to the new server, with a Postgres beside it.
+
+## Performance (2026-11-16)
+
+Measured with `apps/server/examples/bench.rs` (README, "Benchmark"), 32 accounts, 2 s a scenario, 32 requests in flight, on 4 cores, before and after:
+
+| Scenario        | Requests a second, before → after | p99 (ms), before → after | Postgres CPU per request |
+| --------------- | --------------------------------- | ------------------------ | ------------------------ |
+| `pull_progress` | 838 → 3,094                       | 57 → 16                  | −78%                     |
+| `refresh`       | 1,107 → 3,395                     | 43 → 15                  | −71%                     |
+| `auth_user`     | 2,746 → 7,310                     | 19 → 8                   | −73%                     |
+| `pull_profiles` | 2,143 → 5,295                     | 22 → 11                  | −68%                     |
+| `tv_pull`       | 2,329 → 4,855                     | 24 → 11                  | −61%                     |
+| `push_progress` | 1,734 → 3,232                     | 27 → 17                  | −49%                     |
+| `pull_library`  | 1,103 → 1,541                     | 41 → 34                  | −29%                     |
+| `rest_addons`   | 3,577 → 4,899                     | 14 → 11                  | −24%                     |
+| `rest_upsert`   | 2,549 → 2,978                     | 19 → 17                  | −8%                      |
+
+The binary went from 17.3 MB to 10.1 MB, the server's idle RSS from 9.9 MB to 8.5 MB, Postgres's memory after a run from 242 MB to 182 MB, and the database after a run from 48 MB to 35 MB. What changed:
+
+- **Statements prepared once a connection.** The server's own SQL goes through `db::Prepared` (deadpool's statement cache), so Postgres parses and plans it once a connection instead of on every call. PostgREST's SQL, which is made for each request, is sent typed (`query_typed`): one round trip, without asking Postgres to describe it first.
+- **A schema cache, as PostgREST has.** Functions' arguments and tables' primary keys are read from the catalog once a minute rather than on every RPC or upsert, and an RPC no longer takes a second connection for it. Only names that exist are kept.
+- **Fewer round trips in Auth.** A sign-in writes its session, sign-in method, refresh token and sign-in times in one statement; a refresh revokes, issues and touches the session in one; the user and the session's methods are read together.
+- **Nuvio's progress pulls without a temporary table** (`migrations/0004_faster_pulls.sql`). `sync_pull_watch_progress` and `sync_pull_watch_progress_delta` made and dropped a table on every call, which was most of a pull's time and stalled pulls by most of a second now and then. They're replaced with the same arguments, checks and answers. Nuvio's files are unchanged; if Nuvio changes these functions, the replacement has to follow.
+- **The IPTV lists' policy** compares `user_id` with `(SELECT auth.uid())`, the same rows as `can_access_user_data(user_id)` but worked out once a query. Edited in `0003_velio.sql`, as no server runs it yet.
+- **GoTrue's clean-up**: the daily clean-up deletes refresh tokens revoked a day ago and sessions 72 hours past `not_after`, by the database's clock, as GoTrue's does. Before, every refresh left a row for good.
+- **The release build** is one codegen unit with fat LTO and no symbols: 42% smaller, about 11% less CPU a request. It takes about 2 minutes; the checks use debug builds.
+
+Measured and left: 8 connections cost 3–8% of throughput and save 29% of Postgres's memory, 32 are slower than 16, so the default stays 16 (`VELIO_DB_POOL`). A library pull of 150 items spends most of its time in `json_agg`, as PostgREST's does. Password sign-ins are bcrypt at cost 12 (the bcrypt crate's default), about 0.29 s of CPU each, where GoTrue uses 10 (`bcrypt.DefaultCost`); lowering it would be a security choice, not a speed-up. The benchmark did show that a sign-in to an email with no account checked a cost-10 dummy hash, 73 ms against 292 ms, so the time told whether an account exists: the dummy is now made at start with the real cost, and a unit test keeps the two the same.
 
 ## Open choices
 

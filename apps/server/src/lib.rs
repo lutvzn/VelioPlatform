@@ -1,29 +1,26 @@
-//! The Velio sync server (PLAN.md, "Moving off Cloudflare"): the web UI, and
-//! /v1 for TVs and apps, with every list stored as ciphertext in one SQLite
-//! file.
+//! The Velio server: velio.tv's website, and Nuvio's backend (Supabase Auth,
+//! PostgREST, Storage and Nuvio's edge functions) on Nuvio's own Postgres
+//! schema, so Nuvio's apps and VelioTV can both use it.
 
 pub mod accounts;
+pub mod api;
 pub mod assets;
-pub mod backup;
 pub mod cleanup;
 pub mod closing;
 pub mod config;
 pub mod db;
 pub mod error;
-pub mod events;
 pub mod http;
+pub mod jwt;
 pub mod limits;
 pub mod mail;
 pub mod notices;
 pub mod ops_session;
-pub mod packed;
 pub mod routes;
 pub mod session;
-pub mod sync_core;
 pub mod time;
 pub mod tokens;
 pub mod turnstile;
-pub mod vault;
 pub mod views;
 pub mod web;
 
@@ -49,8 +46,8 @@ pub struct AppState {
     pub mailer: Arc<Mailer>,
     /// For Turnstile and Resend.
     pub http: reqwest::Client,
-    /// The TVs' open sockets, to tell them of changes.
-    pub sockets: Arc<events::Sockets>,
+    /// PostgREST's schema cache.
+    pub schema: Arc<api::rest::Schema>,
 }
 
 impl AppState {
@@ -58,7 +55,7 @@ impl AppState {
         let csp = http::csp(cfg.turnstile.is_some()).into();
         let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build()?;
         let mailer = Arc::new(Mailer::new(&cfg, http.clone())?);
-        Ok(Self { cfg: Arc::new(cfg), db, limits: Arc::default(), csp, mailer, http, sockets: Arc::default() })
+        Ok(Self { cfg: Arc::new(cfg), db, limits: Arc::default(), csp, mailer, http, schema: Arc::default() })
     }
 }
 
@@ -67,13 +64,13 @@ pub fn app(state: AppState) -> Router {
     use axum::middleware::{from_fn, from_fn_with_state};
 
     Router::new()
-        .merge(routes::probe::router())
+        .merge(api::router())
         .merge(routes::web::router())
         .merge(routes::accounts::router())
-        .merge(routes::vault::router())
-        .merge(routes::pair::router())
-        .merge(routes::settings::router())
-        .merge(routes::tv::router())
+        .merge(routes::approve::router())
+        .merge(routes::profiles::router())
+        .merge(routes::lists::router())
+        .merge(routes::devices::router())
         .merge(routes::notices::router())
         .merge(routes::ops::router())
         .merge(assets::router())
@@ -88,7 +85,8 @@ pub fn app(state: AppState) -> Router {
                 .layer(from_fn(http::server_errors))
                 .layer(CatchPanicLayer::custom(error::panicked))
                 .layer(from_fn(http::limit_bodies))
-                .layer(from_fn(http::cors))
+                // Kong's part: CORS, and the API key on Supabase's paths.
+                .layer(from_fn_with_state(state.clone(), api::gateway))
                 .layer(from_fn_with_state(state.clone(), http::same_origin_posts))
                 .layer(from_fn_with_state(state.clone(), session::sessions)),
         )

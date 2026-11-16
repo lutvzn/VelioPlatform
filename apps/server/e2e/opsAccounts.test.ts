@@ -2,7 +2,8 @@
 // and narrowed by part of an email or an exact id.
 
 import { describe, expect, it } from "vitest";
-import { confirmedAccount, fresh, newCredentials, SITE, signedInAccount, signup, worker } from "./helpers.ts";
+import { confirmedAccount, fresh, ops, signedInAccount, signup } from "./helpers.ts";
+import { signInTv } from "./tv.ts";
 
 interface Row {
   id: string;
@@ -14,17 +15,6 @@ interface Row {
   tv_limit: number | null;
   notice_count: number;
 }
-
-const ops = (path: string, body?: unknown) =>
-  worker.fetch(`${SITE}/ops${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    headers: {
-      "cf-connecting-ip": fresh().ip,
-      Authorization: "Bearer test-ops-token",
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
 
 const listed = async (query: Record<string, string>) => {
   const answer = await ops(`/accounts?${new URLSearchParams(query).toString()}`);
@@ -46,19 +36,20 @@ describe("The operator's list of accounts", () => {
   it("lists accounts newest first, with their TVs and notices", async () => {
     const older = await signedInAccount();
     const newer = await signedInAccount();
+    await signInTv(older.browser);
     const prefix = older.email.split("-")[0] ?? "";
     const all = await emails({ q: `${prefix}-` });
     expect(all.indexOf(newer.email)).toBeGreaterThanOrEqual(0);
     expect(all.indexOf(newer.email)).toBeLessThan(all.indexOf(older.email));
 
-    expect((await ops(`/accounts/${older.browser.accountId}/tv-limit`, { limit: 4 })).status).toBe(200);
+    expect((await ops(`/accounts/${older.userId}/tv-limit`, { limit: 4 })).status).toBe(200);
     const list = await listed({ q: older.email });
     expect(list.total).toBe(1);
     expect(list.tv_limits).toEqual({ default: 10, max: 50 });
     expect(list.accounts[0]).toMatchObject({
-      id: older.browser.accountId,
+      id: older.userId,
       email: older.email,
-      devices: 0,
+      devices: 1,
       tv_limit: 4,
       allowed: 4,
       notice_count: 0,
@@ -66,8 +57,8 @@ describe("The operator's list of accounts", () => {
   });
 
   it("finds an account by its id, or by part of its email, in any case", async () => {
-    const { email, browser } = await signedInAccount();
-    expect(await emails({ q: browser.accountId })).toEqual([email]);
+    const { email, userId } = await signedInAccount();
+    expect(await emails({ q: userId })).toEqual([email]);
     expect(await emails({ q: email.toUpperCase() })).toEqual([email]);
     expect(await emails({ q: `  ${email.slice(0, -4)}  ` })).toEqual([email]);
     // % and _ are only themselves.
@@ -78,9 +69,9 @@ describe("The operator's list of accounts", () => {
   it("shows accounts by state", async () => {
     const open = await confirmedAccount();
     const unconfirmed = fresh();
-    expect((await signup({ ip: unconfirmed.ip }, unconfirmed.email, newCredentials())).status).toBe(200);
+    expect((await signup({ ip: unconfirmed.ip }, unconfirmed.email)).status).toBe(200);
     const closed = await signedInAccount();
-    const closing = await ops(`/accounts/${closed.browser.accountId}/close`, {
+    const closing = await ops(`/accounts/${closed.userId}/close`, {
       reason: "Testing the list of accounts.",
       confirm: closed.email,
     });
@@ -94,9 +85,7 @@ describe("The operator's list of accounts", () => {
   it("refuses an unknown state, a search too long, and anyone but the operator", async () => {
     expect((await ops("/accounts?state=everything")).status).toBe(400);
     expect((await ops(`/accounts?q=${"a".repeat(321)}`)).status).toBe(400);
-    const answer = await worker.fetch(`${SITE}/ops/accounts`, {
-      headers: { "cf-connecting-ip": fresh().ip },
-    });
-    expect(answer.status).toBe(401);
+    expect((await ops("/accounts", undefined, null)).status).toBe(401);
+    expect((await ops("/accounts", undefined, "not-the-token")).status).toBe(401);
   });
 });

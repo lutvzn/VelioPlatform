@@ -7,7 +7,14 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-use crate::sync_core::{DEFAULT_DEVICE_LIMIT, MAX_DEVICES};
+use crate::jwt;
+
+/// Every account's TV limit, unless the operator gives it another.
+pub const DEFAULT_DEVICE_LIMIT: usize = 10;
+/// The most TVs the operator may give an account.
+pub const MAX_DEVICES: usize = 50;
+/// Connections to Postgres, unless VELIO_DB_POOL says otherwise.
+pub const DB_POOL: usize = 16;
 
 /// How email leaves the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,30 +67,6 @@ impl IpRange {
     }
 }
 
-/// S3-compatible storage for the nightly backups, path-style:
-/// `https://<endpoint>/<bucket>[/<prefix>]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct S3 {
-    /// `https` or `http`.
-    pub scheme: String,
-    /// The endpoint's host, and port if any.
-    pub host: String,
-    /// `/<bucket>[/<prefix>]`, with no trailing slash.
-    pub path: String,
-    pub region: String,
-    pub access_key_id: String,
-    pub secret_access_key: String,
-}
-
-/// The nightly copy of the database (PLAN.md, "Differences, on purpose").
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Backup {
-    /// Where the copies go, kept BACKUP_KEEP_DAYS.
-    pub dir: PathBuf,
-    /// Also sent here, when set.
-    pub s3: Option<S3>,
-}
-
 /// How many TVs an account may have (PLAN.md, "TV limits").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TvLimits {
@@ -100,30 +83,64 @@ impl Default for TvLimits {
 }
 
 impl TvLimits {
-    /// The limit for an account the operator gave `granted` (accounts.tv_limit), or none.
+    /// The limit for an account the operator gave `granted` (velio_private.tv_limits), or none.
     pub fn for_account(self, granted: Option<i64>) -> usize {
         granted.and_then(|n| usize::try_from(n).ok()).filter(|n| *n > 0).unwrap_or(self.default).min(self.max)
+    }
+}
+
+/// Supabase Auth's settings, under the names Nuvio's self-host gives them.
+#[derive(Debug, Clone)]
+pub struct Auth {
+    /// JWT_SECRET: signs access tokens, and the anon and service keys.
+    pub jwt_secret: String,
+    /// JWT_EXPIRY: how long an access token lasts, in seconds.
+    pub jwt_expiry: i64,
+    /// ANON_KEY and SERVICE_ROLE_KEY: legacy API keys, tokens signed with
+    /// JWT_SECRET. Made from it when not set.
+    pub anon_key: String,
+    pub service_role_key: String,
+    /// SUPABASE_PUBLISHABLE_KEY and SUPABASE_SECRET_KEY: the newer sb_ keys,
+    /// which stand for the anon and service keys.
+    pub publishable_key: Option<String>,
+    pub secret_key: Option<String>,
+    pub disable_signup: bool,
+    /// ENABLE_ANONYMOUS_USERS: Nuvio's apps start as a guest.
+    pub anonymous_users: bool,
+    /// ENABLE_EMAIL_AUTOCONFIRM: accounts can sign in before confirming the email.
+    pub autoconfirm: bool,
+    pub password_min_length: usize,
+}
+
+impl Auth {
+    /// The key Nuvio's clients send as `apikey` (/.well-known/nuvio).
+    pub fn public_key(&self) -> &str {
+        self.publishable_key.as_deref().unwrap_or(&self.anon_key)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Config {
     /// The site's origin, such as `https://velio.tv`, with no trailing slash.
+    /// Also the backend Nuvio's clients are given.
     pub site_url: String,
     /// Its host, such as `velio.tv`, for the words on pages.
     pub site_host: String,
     pub listen: SocketAddr,
-    pub database: PathBuf,
+    pub database_url: String,
+    /// The most connections the server keeps to Postgres (VELIO_DB_POOL).
+    pub db_pool: usize,
+    /// Where Storage keeps its files (avatars).
+    pub storage_dir: PathBuf,
     /// The reverse proxy's addresses. Requests from them carry the client's
-    /// IP in X-Forwarded-For, and the TLS details for /v1/probe.
+    /// IP in X-Forwarded-For.
     pub trusted_proxies: Vec<IpRange>,
-    /// Nightly backups, when VELIO_BACKUP_DIR is set.
-    pub backup: Option<Backup>,
     /// Who carries traffic to the server and ends HTTPS, such as Cloudflare,
     /// for the privacy notice.
     pub network_provider: Option<String>,
-    /// The HMAC key for made-up salts (GET /prelogin).
-    pub prelogin_secret: String,
+    pub auth: Auth,
+    /// The catalog add-on new profiles get (Nuvio's NUVIO_DEFAULT_CATALOG_URL).
+    pub default_catalog_url: String,
     /// The operator's token; /ops is a 404 without it.
     pub ops_token: Option<String>,
     pub email_from: String,
@@ -156,7 +173,16 @@ impl Config {
             .unwrap_or_else(|| "127.0.0.1:8787".into())
             .parse()
             .context("VELIO_LISTEN must be an address and port, such as 127.0.0.1:8787")?;
-        let database = value("VELIO_DATABASE").unwrap_or_else(|| "velio.db".into()).into();
+        let database_url = required("DATABASE_URL")?;
+        let db_pool = match value("VELIO_DB_POOL") {
+            None => DB_POOL,
+            Some(text) => text
+                .parse()
+                .ok()
+                .filter(|n| (1..=200).contains(n))
+                .context("VELIO_DB_POOL must be a number of connections from 1 to 200")?,
+        };
+        let storage_dir = value("VELIO_STORAGE_DIR").unwrap_or_else(|| "storage".into()).into();
         let trusted_proxies = value("VELIO_TRUSTED_PROXY")
             .unwrap_or_default()
             .split(',')
@@ -168,12 +194,13 @@ impl Config {
                 })
             })
             .collect::<Result<_>>()?;
-        let backup = backup(&value, dev_mode)?;
         let network_provider = value("VELIO_NETWORK_PROVIDER");
 
-        let prelogin_secret = required("PRELOGIN_SECRET")?;
-        if !dev_mode && prelogin_secret.len() < 32 {
-            bail!("PRELOGIN_SECRET must be at least 32 characters, such as `openssl rand -base64 32`");
+        let auth = auth(&value, dev_mode)?;
+        let default_catalog_url =
+            value("DEFAULT_CATALOG_URL").unwrap_or_else(|| "https://catalog.nuvio.tv/manifest.json".into());
+        if !default_catalog_url.starts_with("https://") && !default_catalog_url.starts_with("http://") {
+            bail!("DEFAULT_CATALOG_URL must be an add-on's manifest address");
         }
         let ops_token = value("OPS_TOKEN");
         if !dev_mode && ops_token.as_ref().is_some_and(|token| token.len() < 32) {
@@ -207,11 +234,13 @@ impl Config {
             site_url,
             site_host,
             listen,
-            database,
+            database_url,
+            db_pool,
+            storage_dir,
             trusted_proxies,
-            backup,
             network_provider,
-            prelogin_secret,
+            auth,
+            default_catalog_url,
             ops_token,
             email_from,
             abuse_email,
@@ -240,53 +269,63 @@ fn tv_limits(value: &impl Fn(&str) -> Option<String>) -> Result<TvLimits> {
     Ok(TvLimits { default, max })
 }
 
-fn backup(value: &impl Fn(&str) -> Option<String>, dev_mode: bool) -> Result<Option<Backup>> {
-    let s3 = match value("VELIO_BACKUP_S3_URL") {
-        None => {
-            if value("VELIO_BACKUP_S3_ACCESS_KEY_ID").is_some() || value("VELIO_BACKUP_S3_SECRET_ACCESS_KEY").is_some()
-            {
-                bail!("VELIO_BACKUP_S3_URL must be set with the S3 keys");
-            }
-            None
+fn flag(value: &impl Fn(&str) -> Option<String>, name: &str, default: bool) -> Result<bool> {
+    match value(name).as_deref() {
+        None => Ok(default),
+        Some("true" | "1") => Ok(true),
+        Some("false" | "0") => Ok(false),
+        Some(other) => bail!("{name} must be true or false, not {other:?}"),
+    }
+}
+
+fn auth(value: &impl Fn(&str) -> Option<String>, dev_mode: bool) -> Result<Auth> {
+    let jwt_secret = value("JWT_SECRET").context("JWT_SECRET must be set, such as `openssl rand -base64 48`")?;
+    if !dev_mode && jwt_secret.len() < 32 {
+        bail!("JWT_SECRET must be at least 32 characters, such as `openssl rand -base64 48`");
+    }
+    let jwt_expiry = match value("JWT_EXPIRY") {
+        None => 3600,
+        Some(text) => text
+            .parse::<i64>()
+            .ok()
+            .filter(|seconds| (60..=7 * 24 * 3600).contains(seconds))
+            .with_context(|| format!("JWT_EXPIRY must be seconds, from 60 to a week, not {text:?}"))?,
+    };
+    let key = |name: &str, role: &str| -> Result<String> {
+        let Some(key) = value(name) else { return Ok(jwt::api_key(role, &jwt_secret)) };
+        let claims = jwt::verify(&key, &jwt_secret, 0)
+            .map_err(|_| anyhow::anyhow!("{name} must be a token signed with JWT_SECRET"))?;
+        if claims.get("role").and_then(serde_json::Value::as_str) != Some(role) {
+            bail!("{name} must be a token for the {role} role");
         }
-        Some(url) => {
-            let (scheme, rest) = url
-                .split_once("://")
-                .filter(|(scheme, _)| *scheme == "https" || (dev_mode && *scheme == "http"))
-                .context("VELIO_BACKUP_S3_URL must start with https://")?;
-            let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-            let path = path.trim_end_matches('/');
-            let safe = |text: &str| text.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b));
-            if host.is_empty()
-                || !safe(&host.replace(':', ""))
-                || path.is_empty()
-                || !path.split('/').all(|seg| !seg.is_empty() && safe(seg))
-            {
-                bail!(
-                    "VELIO_BACKUP_S3_URL must be the endpoint and the bucket, such as https://s3.example.com/velio-backups"
-                );
-            }
-            // As reqwest sends Host, which the signature covers.
-            let default_port = if scheme == "https" { ":443" } else { ":80" };
-            let host = host.strip_suffix(default_port).unwrap_or(host);
-            let key = |name: &str| value(name).with_context(|| format!("{name} must be set with VELIO_BACKUP_S3_URL"));
-            Some(S3 {
-                scheme: scheme.into(),
-                host: host.into(),
-                path: format!("/{path}"),
-                region: value("VELIO_BACKUP_S3_REGION").unwrap_or_else(|| "auto".into()),
-                access_key_id: key("VELIO_BACKUP_S3_ACCESS_KEY_ID")?,
-                secret_access_key: key("VELIO_BACKUP_S3_SECRET_ACCESS_KEY")?,
-            })
+        Ok(key)
+    };
+    let sb_key = |name: &str, prefix: &str| -> Result<Option<String>> {
+        match value(name) {
+            Some(key) if !key.starts_with(prefix) => bail!("{name} must start with {prefix}"),
+            other => Ok(other),
         }
     };
-    match value("VELIO_BACKUP_DIR") {
-        Some(dir) => Ok(Some(Backup { dir: dir.into(), s3 })),
-        None if s3.is_some() => {
-            bail!("VELIO_BACKUP_DIR must be set for VELIO_BACKUP_S3_URL: copies are made there first")
-        }
-        None => Ok(None),
-    }
+    let password_min_length = match value("PASSWORD_MIN_LENGTH") {
+        None => 6,
+        Some(text) => text
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (6..=72).contains(n))
+            .with_context(|| format!("PASSWORD_MIN_LENGTH must be from 6 to 72, not {text:?}"))?,
+    };
+    Ok(Auth {
+        anon_key: key("ANON_KEY", "anon")?,
+        service_role_key: key("SERVICE_ROLE_KEY", "service_role")?,
+        publishable_key: sb_key("SUPABASE_PUBLISHABLE_KEY", "sb_publishable_")?,
+        secret_key: sb_key("SUPABASE_SECRET_KEY", "sb_secret_")?,
+        disable_signup: flag(value, "DISABLE_SIGNUP", false)?,
+        anonymous_users: flag(value, "ENABLE_ANONYMOUS_USERS", true)?,
+        autoconfirm: flag(value, "ENABLE_EMAIL_AUTOCONFIRM", true)?,
+        password_min_length,
+        jwt_secret,
+        jwt_expiry,
+    })
 }
 
 /// `https://velio.tv` or `http://127.0.0.1:8787`: a scheme and a host, no path.
@@ -311,7 +350,8 @@ mod tests {
     fn config(pairs: &[(&str, &str)]) -> Result<Config> {
         let base: HashMap<&str, &str> = [
             ("VELIO_SITE_URL", "https://velio.tv/"),
-            ("PRELOGIN_SECRET", "a-prelogin-secret-of-32-characters!"),
+            ("JWT_SECRET", "a-jwt-secret-of-at-least-32-characters!"),
+            ("DATABASE_URL", "postgres://velio@127.0.0.1/velio"),
             ("EMAIL_FROM", "no-reply@velio.tv"),
             ("ABUSE_EMAIL", "abuse@velio.tv"),
             ("SMTP_URL", "smtps://user:pass@mail.example:465"),
@@ -332,6 +372,13 @@ mod tests {
         assert_eq!(config.turnstile, None);
         assert_eq!(config.tv_limits, TvLimits { default: 10, max: 50 });
         assert!(!config.dev_mode);
+        assert_eq!(config.default_catalog_url, "https://catalog.nuvio.tv/manifest.json");
+        let auth = &config.auth;
+        assert_eq!((auth.jwt_expiry, auth.password_min_length), (3600, 6));
+        assert!(auth.anonymous_users && auth.autoconfirm && !auth.disable_signup);
+        assert_eq!(jwt::verify(&auth.anon_key, &auth.jwt_secret, 0).unwrap()["role"], "anon");
+        assert_eq!(jwt::verify(&auth.service_role_key, &auth.jwt_secret, 0).unwrap()["role"], "service_role");
+        assert_eq!(auth.public_key(), auth.anon_key);
     }
 
     #[test]
@@ -351,15 +398,18 @@ mod tests {
         for (pairs, problem) in [
             (vec![("VELIO_SITE_URL", "velio.tv")], "must start with https://"),
             (vec![("VELIO_SITE_URL", "https://velio.tv/app")], "only a scheme and a host"),
-            (vec![("PRELOGIN_SECRET", "short")], "at least 32"),
+            (vec![("JWT_SECRET", "short")], "at least 32"),
+            (vec![("ANON_KEY", "not-a-token")], "ANON_KEY must be a token signed with JWT_SECRET"),
+            (vec![("SUPABASE_SECRET_KEY", "secret")], "must start with sb_secret_"),
+            (vec![("DISABLE_SIGNUP", "maybe")], "DISABLE_SIGNUP must be true or false"),
+            (vec![("JWT_EXPIRY", "5")], "JWT_EXPIRY must be seconds"),
+            (vec![("PASSWORD_MIN_LENGTH", "3")], "PASSWORD_MIN_LENGTH must be from 6"),
             (vec![("SMTP_URL", "")], "Set SMTP_URL or RESEND_API_KEY"),
             (vec![("RESEND_API_KEY", "re_x")], "not both"),
             (vec![("SMTP_URL", "mail.example")], "smtp://"),
             (vec![("TURNSTILE_SITE_KEY", "0x4")], "or neither"),
             (vec![("VELIO_TRUSTED_PROXY", "caddy")], "IP addresses or ranges"),
             (vec![("VELIO_TRUSTED_PROXY", "192.0.2.1/33")], "IP addresses or ranges"),
-            (vec![("VELIO_BACKUP_S3_URL", "https://s3.example.com/b")], "VELIO_BACKUP_S3_ACCESS_KEY_ID must be set"),
-            (vec![("VELIO_BACKUP_S3_ACCESS_KEY_ID", "k")], "VELIO_BACKUP_S3_URL must be set"),
             (vec![("DEV_MODE", "yes")], "DEV_MODE"),
             (vec![("VELIO_TV_LIMIT", "0")], "VELIO_TV_LIMIT must be a number of TVs from 1 to 50"),
             (vec![("VELIO_TV_LIMIT_MAX", "51")], "VELIO_TV_LIMIT_MAX must be a number of TVs from 1 to 50"),
@@ -372,44 +422,20 @@ mod tests {
     }
 
     #[test]
-    fn reads_proxies_and_backups() {
-        let config = config(&[
-            ("VELIO_TRUSTED_PROXY", "127.0.0.1, 172.16.0.0/12,fd00::/8"),
-            ("VELIO_BACKUP_DIR", "/data/backups"),
-            ("VELIO_BACKUP_S3_URL", "https://account.r2.example:443/velio-backups/nightly/"),
-            ("VELIO_BACKUP_S3_ACCESS_KEY_ID", "key"),
-            ("VELIO_BACKUP_S3_SECRET_ACCESS_KEY", "secret"),
-        ])
-        .unwrap();
+    fn reads_proxies() {
+        let config = config(&[("VELIO_TRUSTED_PROXY", "127.0.0.1, 172.16.0.0/12,fd00::/8")]).unwrap();
         let trusted = |ip: &str| config.trusted_proxies.iter().any(|range| range.contains(ip.parse().unwrap()));
         assert!(
             trusted("127.0.0.1") && trusted("172.18.0.5") && trusted("::ffff:172.31.255.255") && trusted("fd12::1")
         );
         assert!(!trusted("127.0.0.2") && !trusted("172.32.0.1") && !trusted("::1"));
-        let backup = config.backup.unwrap();
-        assert_eq!(backup.dir, PathBuf::from("/data/backups"));
-        let s3 = backup.s3.unwrap();
-        assert_eq!(
-            (s3.host.as_str(), s3.path.as_str(), s3.region.as_str()),
-            ("account.r2.example", "/velio-backups/nightly", "auto")
-        );
-        assert!(
-            self::config(&[
-                ("VELIO_BACKUP_S3_URL", "https://s3.example.com/b"),
-                ("VELIO_BACKUP_S3_ACCESS_KEY_ID", "k"),
-                ("VELIO_BACKUP_S3_SECRET_ACCESS_KEY", "s")
-            ])
-            .unwrap_err()
-            .to_string()
-            .contains("VELIO_BACKUP_DIR")
-        );
         let everyone = self::config(&[("VELIO_TRUSTED_PROXY", "0.0.0.0/0")]).unwrap();
         assert!(everyone.trusted_proxies[0].contains("203.0.113.9".parse().unwrap()));
     }
 
     #[test]
     fn dev_mode_keeps_mail_in_the_outbox() {
-        let config = config(&[("DEV_MODE", "1"), ("SMTP_URL", ""), ("PRELOGIN_SECRET", "dev")]).unwrap();
+        let config = config(&[("DEV_MODE", "1"), ("SMTP_URL", ""), ("JWT_SECRET", "dev")]).unwrap();
         assert_eq!(config.mail, Mail::DevOutbox);
         let local = self::config(&[("VELIO_SITE_URL", "http://127.0.0.1:8787")]).unwrap();
         assert_eq!(local.site_host, "127.0.0.1");

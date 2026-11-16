@@ -22,7 +22,8 @@ pub fn router() -> Router<AppState> {
 /// For the container's health check (`velio-server health`): the server
 /// answers, and the database does too.
 async fn healthz(State(state): State<AppState>) -> Response {
-    match state.db.call(|conn| Ok(conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?)).await {
+    let answered = async { anyhow::Ok(state.db.client().await?.query_one("SELECT 1", &[]).await?) };
+    match answered.await {
         Ok(_) => (StatusCode::OK, "ok").into_response(),
         Err(error) => {
             tracing::error!("The health check failed: {error:#}");

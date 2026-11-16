@@ -42,8 +42,8 @@ async fn send(web: Web, form: Form) -> Result<Response, AppError> {
         let problem = "The check that you're a person didn't pass. Try again.";
         return Ok(web.problem(problem, StatusCode::BAD_REQUEST));
     }
-    let saved = notice.clone();
-    let (id, account_found) = web.state.db.call(move |conn| save_notice(conn, &saved, now_ms())).await?;
+    let client = web.state.db.client().await?;
+    let (id, account_found) = save_notice(&client, &notice, now_ms()).await?;
     let summary = NoticeSummary { id: &id, notice: &notice, account_found };
     mail::send(&web.state, notice_mail(&web.state.cfg.abuse_email, &summary)).await?;
     Ok(web.answer("Notice received", notice_received(&id)))

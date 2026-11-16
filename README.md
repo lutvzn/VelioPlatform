@@ -1,33 +1,62 @@
 # Velio Platform
 
-The server side of [VelioTV](../VelioTV): end-to-end encrypted sync of M3U and
-Xtream lists across an owner's TVs, on [velio.tv](https://velio.tv). PLAN.md
-is the design, with what each phase built and how it was checked.
+The server side of [VelioTV](../VelioTV), on [velio.tv](https://velio.tv):
+accounts, profiles, add-ons and M3U and Xtream lists, which an owner's TVs
+pull. It speaks Nuvio's API, so a Nuvio app can use it in place of Nuvio's
+own server, and it runs on Nuvio's database schema, unchanged. PLAN.md is the
+design, with what each phase built and how it was checked.
+
+## What it serves
+
+- `/.well-known/nuvio`: where a Nuvio app finds the backend and its key.
+- `/auth/v1`: Supabase Auth (GoTrue): sign-up, password and refresh grants,
+  anonymous guests, recovery, sessions and sign-out.
+- `/rest/v1`: PostgREST's dialect over Nuvio's tables and RPCs, run as the
+  caller's role, so Nuvio's row-level policies decide what each one sees.
+- `/storage/v1`: Supabase Storage, for profile pictures, on the local disk.
+- `/functions/v1`: Nuvio's edge functions, such as `tv-logins-exchange`.
+- The website: sign-up, profiles, add-ons, lists, TVs, `/abuse` and `/ops`,
+  written on the same tables and RPCs.
+
+Velio's own additions live beside Nuvio's schema, never in it: IPTV lists
+(`public.velio_iptv_lists`, read by `velio_pull_iptv_lists`), TV limits,
+closed accounts and notices (`velio_private`).
 
 ## Layout
 
 ```
-apps/server/           the server (Rust: axum, maud, SQLite): what velio.tv runs, and anyone can self-host
-  src/routes/          web pages, vault, pairing, settings, /v1 for TVs, notices, /ops
+apps/server/           the server (Rust: axum, maud, tokio-postgres): what velio.tv runs, and anyone can self-host
+  src/api/             Nuvio's API: auth, rest, storage, functions
+  src/routes/          the website: accounts, profiles, lists, devices, TV approval, notices, /ops
   src/views/           pages, written with maud
-  src/sync_core/       the server's half of sync-core, checked against tests/vectors.json
-  migrations/          the one SQLite database
-  client/              vault.js, ops.js and the styles: the browser half, where all encryption happens
-  scripts/             build-client.mjs (builds public/static, which the binary embeds), ops.mjs
-  e2e/                 tests over HTTP, against the server binary
+  migrations/          Supabase's roles, Auth and Storage; nuvio/ (Nuvio's, unchanged); then Velio's
+  client/              site.js, ops.js and the styles
+  scripts/             build-client.mjs (builds public/static, which the binary embeds), ops.mjs,
+                       supabase-migrations.mjs (brings the schema over from references/)
+  e2e/                 tests over HTTP, against the server binary and a throwaway Postgres
+  smoke/               Nuvio's own smoke tests, run against this server
+references/            Nuvio's self-host, GoTrue and Storage, to check against
 Dockerfile             the distroless image
-packages/sync-core/    shared by the browser, the server's tests and (later) VelioTV:
-                       keys, sealing, signing, records, changes, pairing, pulls, export
 ```
 
 ## Working on it
 
 Run everything on the host (not in VelioTV's distrobox). Node 22 or newer,
-and Rust (the version in the Dockerfile).
+Rust (the version in the Dockerfile), and Postgres 17 or newer (`initdb` and
+`postgres` on `PATH`, or in `PG_BIN`) for the tests.
 
 ```sh
 npx -y pnpm@12.14.0 install
 npx -y pnpm@12.14.0 check      # format, lint, types, the Rust checks, all tests
+```
+
+The tests make a Postgres cluster of their own in a temporary folder, or a
+database on the server `VELIO_TEST_DATABASE_URL` names (as a superuser), and
+delete it after. They include Nuvio's smoke tests (`smoke/run.sh`), which
+can also be run against any server:
+
+```sh
+SUPABASE_PUBLIC_URL=http://localhost:8787 DATABASE_URL=postgres://... sh apps/server/smoke/run.sh
 ```
 
 Local server, at http://localhost:8787 (emails go to `/dev/outbox`). Build
@@ -35,87 +64,114 @@ the client first: the binary embeds it, so `cargo` fails without it, and a
 change to `client/` needs a new build and a new `cargo run`.
 
 ```sh
+createdb velio
 npx -y pnpm@12.14.0 --filter @velio/server build
 cd apps/server
-DEV_MODE=1 VELIO_SITE_URL=http://localhost:8787 PRELOGIN_SECRET=dev OPS_TOKEN=dev-ops-token \
-  EMAIL_FROM=no-reply@velio.test ABUSE_EMAIL=abuse@velio.test cargo run
+DEV_MODE=1 VELIO_SITE_URL=http://localhost:8787 DATABASE_URL=postgres:///velio JWT_SECRET=dev \
+  OPS_TOKEN=dev-ops-token EMAIL_FROM=no-reply@velio.test ABUSE_EMAIL=abuse@velio.test cargo run
 ```
 
-That keeps the database in `apps/server/velio.db`. Use `localhost`, not
+Profile pictures go to `apps/server/storage`. Use `localhost`, not
 `127.0.0.1`: the `/ops` cookie is `Secure`, and over plain HTTP only
 `localhost` keeps it.
+
+### Benchmark
+
+`examples/bench.rs` measures the release binary on a throwaway Postgres: it
+signs up accounts, fills them as Nuvio's apps and VelioTV do, then runs each
+scenario (discovery, a TV's pull, Nuvio's pulls and pushes, PostgREST reads
+and upserts, `/auth/v1/user`, refreshes, password sign-ins, the home page)
+at a fixed concurrency. It gives requests a second, p50/p90/p99, CPU per
+1000 requests for the server and for Postgres, and RSS; the binary's and
+database's sizes (empty, per account, after the run, the largest tables);
+and Postgres's memory and the start time.
+
+```sh
+cd apps/server
+cargo build --release
+cargo run --release --example bench -- --baseline bench/baseline.json
+cargo run --release --example bench -- --only pull_progress,refresh --statements
+```
+
+`--statements` adds what Postgres ran per request and the costliest
+statements (pg_stat_statements), and `--postgres name=value` passes Postgres a
+setting and keeps its log in `target/bench/postgres.log` (with
+`session_preload_libraries=auto_explain` and
+`auto_explain.log_min_duration=0`, every plan). The options are at the top of
+the file. `bench/baseline.json` is a run at the defaults (100 accounts, 8 s,
+32 in flight, on 4 cores) and `bench/before-optimizing.json` one from before
+the work in `PLAN.md` ("Performance"). Compare runs on one machine, not
+across machines.
 
 ## Running the server
 
 The server ships as a distroless container image: one static binary, no
 shell, running as a non-root user. It speaks plain HTTP on port 8787; put
-the reverse proxy of your choice in front of it for HTTPS.
+the reverse proxy of your choice in front of it for HTTPS. It needs a
+Postgres database, 17 or newer (Nuvio's schema is a Postgres 17 dump), which it migrates on start; the user it
+connects as must be a superuser the first time, as Supabase's roles are made
+then (`BYPASSRLS` for `service_role`).
 
 ```sh
 docker build -t velio-server .        # or podman build
 docker run -d --name velio -p 127.0.0.1:8787:8787 -v velio-data:/data --env-file velio.env velio-server
 ```
 
-`/data` holds the database (`velio.db`) and the nightly backups
-(`backups/`). The image's health check runs `velio-server health`, which asks
-`/healthz`. `docker exec velio /velio-server backup` makes a backup at once.
+`/data` holds Storage's files (`storage/`); everything else is in Postgres,
+so back it up with `pg_dump` or the host's own backups. The image's health
+check runs `velio-server health`, which asks `/healthz`. `docker exec velio
+/velio-server clean-up` runs the daily clean-up at once.
 
 ### Settings
 
 Set in the environment (`--env-file`). The server refuses to start with a
-missing or malformed one.
+missing or malformed one. The Auth settings take the names Nuvio's
+self-host gives them.
 
-| Variable                                                             | Needed         | Meaning                                                                                                                                                       |
-| -------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VELIO_SITE_URL`                                                     | yes            | The address people use, such as `https://velio.tv`                                                                                                            |
-| `PRELOGIN_SECRET`                                                    | yes            | At least 32 characters: `openssl rand -base64 32`. Keep it: changing it changes the made-up salts unknown emails get                                          |
-| `EMAIL_FROM`, `ABUSE_EMAIL`                                          | yes            | The sender of account emails, and where notices from `/abuse` go                                                                                              |
-| `SMTP_URL` or `RESEND_API_KEY`                                       | one            | Such as `smtps://user:pass@mail.example:465`                                                                                                                  |
-| `VELIO_TRUSTED_PROXY`                                                | behind a proxy | The proxy's addresses or ranges, comma-separated, such as `172.30.0.0/24`. Requests from them give the client's IP in `X-Forwarded-For` (the rightmost entry) |
-| `OPS_TOKEN`                                                          | no             | At least 32 characters. Turns on `/ops`, the operator's page                                                                                                  |
-| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET`                             | no             | Both or neither. Turns on Cloudflare's Turnstile check on sign-up, resets and `/abuse`                                                                        |
-| `VELIO_BACKUP_DIR`                                                   | no             | The image sets `/data/backups`. A copy of the database is made there each night at 04:17 UTC and kept 30 days                                                 |
-| `VELIO_BACKUP_S3_URL`                                                | no             | S3-compatible storage for a second copy, path-style: `https://<endpoint>/<bucket>[/<prefix>]`                                                                 |
-| `VELIO_BACKUP_S3_ACCESS_KEY_ID`, `VELIO_BACKUP_S3_SECRET_ACCESS_KEY` | with the URL   | A key that can put objects in that bucket                                                                                                                     |
-| `VELIO_BACKUP_S3_REGION`                                             | no             | Default `auto` (Cloudflare R2); the bucket's region elsewhere                                                                                                 |
-| `VELIO_NETWORK_PROVIDER`                                             | no             | Who carries traffic to the server and ends HTTPS, if not you, such as `Cloudflare`. Named on `/privacy` and `/security`                                       |
-| `VELIO_TV_LIMIT`                                                     | no             | Default 10. How many TVs an account may have, unless it's given another limit on `/ops`                                                                       |
-| `VELIO_TV_LIMIT_MAX`                                                 | no             | Default 50, the most a manifest can hold. The highest limit `/ops` can give an account                                                                        |
-| `VELIO_LISTEN`, `VELIO_DATABASE`                                     | no             | The image sets `0.0.0.0:8787` and `/data/velio.db`                                                                                                            |
-| `DEV_MODE`                                                           | no             | `1` for a local server: email goes to `/dev/outbox`, and Turnstile is skipped. Never in production                                                            |
+| Variable                                          | Needed         | Meaning                                                                                                                                                       |
+| ------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VELIO_SITE_URL`                                  | yes            | The address people use, such as `https://velio.tv`. Also the backend `/.well-known/nuvio` gives apps                                                          |
+| `DATABASE_URL`                                    | yes            | The Postgres database, such as `postgres://velio:...@db/velio`                                                                                                |
+| `JWT_SECRET`                                      | yes            | At least 32 characters: `openssl rand -base64 48`. Signs access tokens and the API keys; changing it signs everyone out                                       |
+| `EMAIL_FROM`, `ABUSE_EMAIL`                       | yes            | The sender of account emails, and where notices from `/abuse` go                                                                                              |
+| `SMTP_URL` or `RESEND_API_KEY`                    | one            | Such as `smtps://user:pass@mail.example:465`                                                                                                                  |
+| `ANON_KEY`, `SERVICE_ROLE_KEY`                    | no             | Tokens for the `anon` and `service_role` roles, signed with `JWT_SECRET`. Made from it when not set                                                           |
+| `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY` | no             | The newer `sb_publishable_` and `sb_secret_` keys, standing for those two. Apps are given the publishable one when it's set                                   |
+| `JWT_EXPIRY`                                      | no             | Default 3600. How long an access token lasts, in seconds                                                                                                      |
+| `DISABLE_SIGNUP`                                  | no             | Default `false`. `true` stops new accounts                                                                                                                    |
+| `ENABLE_ANONYMOUS_USERS`                          | no             | Default `true`. Nuvio's apps start as a guest                                                                                                                 |
+| `ENABLE_EMAIL_AUTOCONFIRM`                        | no             | Default `true`, as Nuvio's. `false` makes accounts confirm their email before signing in                                                                      |
+| `PASSWORD_MIN_LENGTH`                             | no             | The shortest password accepted                                                                                                                                |
+| `DEFAULT_CATALOG_URL`                             | no             | The catalog add-on new profiles get. Default Nuvio's, `https://catalog.nuvio.tv/manifest.json`                                                                |
+| `VELIO_TRUSTED_PROXY`                             | behind a proxy | The proxy's addresses or ranges, comma-separated, such as `172.30.0.0/24`. Requests from them give the client's IP in `X-Forwarded-For` (the rightmost entry) |
+| `OPS_TOKEN`                                       | no             | At least 32 characters. Turns on `/ops`, the operator's page                                                                                                  |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET`          | no             | Both or neither. Turns on Cloudflare's Turnstile check on sign-up, resets and `/abuse`                                                                        |
+| `VELIO_NETWORK_PROVIDER`                          | no             | Who carries traffic to the server and ends HTTPS, if not you, such as `Cloudflare`. Named on `/privacy` and `/security`                                       |
+| `VELIO_TV_LIMIT`                                  | no             | Default 10. How many TVs an account may have, unless it's given another limit on `/ops`                                                                       |
+| `VELIO_TV_LIMIT_MAX`                              | no             | Default 50. The highest limit `/ops` can give an account                                                                                                      |
+| `VELIO_LISTEN`, `VELIO_STORAGE_DIR`               | no             | The image sets `0.0.0.0:8787` and `/data/storage`                                                                                                             |
+| `VELIO_DB_POOL`                                   | no             | Default 16. Connections to Postgres; each takes about 8 MB there. On a host of 1 or 2 cores, 8 does as well (README, "Benchmark")                             |
+| `DEV_MODE`                                        | no             | `1` for a local server: email goes to `/dev/outbox`, and Turnstile is skipped. Never in production                                                            |
 
 `/privacy` and `/security` follow these settings: they name the network
-provider, Resend or an email provider, Turnstile, and the backups as
-configured.
+provider, Resend or an email provider, and Turnstile, as configured.
 
 What `/privacy` promises is yours to keep:
 
 - **Logs** (one line per request, with the client's IP) must go after 7 days.
   With journald (`docker run --log-driver journald`, or Podman's default on
   systemd hosts), set `MaxRetentionSec=7d` in `/etc/systemd/journald.conf`.
-- **S3 backups** must go after 30 days. Give the bucket a lifecycle rule that
-  deletes objects 30 days after they're made. The server deletes only its
-  local copies.
+- **Database backups** must go after 30 days, so a closed account's data
+  doesn't outlive its purge for long.
 
 ### Behind a reverse proxy
 
-Any proxy works. It must:
-
-- send `X-Forwarded-For`, and the server must trust it (`VELIO_TRUSTED_PROXY`);
-- pass WebSocket upgrades (`/v1/events`);
-- set, not append, `X-Velio-TLS-Version`, `X-Velio-TLS-Cipher` and
-  `X-Velio-HTTP-Protocol`, if you want `/v1/probe` to report what the TV
-  negotiated. Without them those fields are `null`.
-
-Caddy:
+Any proxy works. It must send `X-Forwarded-For`, and the server must trust
+it (`VELIO_TRUSTED_PROXY`). Caddy:
 
 ```caddyfile
 velio.example {
-	reverse_proxy 127.0.0.1:8787 {
-		header_up X-Velio-TLS-Version {http.request.tls.version}
-		header_up X-Velio-TLS-Cipher {http.request.tls.cipher_suite}
-		header_up X-Velio-HTTP-Protocol {http.request.proto}
-	}
+	reverse_proxy 127.0.0.1:8787
 }
 ```
 
@@ -133,8 +189,15 @@ the host, and HTTPS ends at Cloudflare's edge, as it did for the Worker.
 services:
   velio:
     image: velio-server
-    env_file: velio.env # with VELIO_TRUSTED_PROXY=172.30.0.0/24 and VELIO_NETWORK_PROVIDER=Cloudflare
+    env_file: velio.env # with VELIO_TRUSTED_PROXY=172.30.0.0/24, VELIO_NETWORK_PROVIDER=Cloudflare and DATABASE_URL=postgres://velio:...@db/velio
     volumes: [velio-data:/data]
+    networks: [velio]
+    depends_on: [db]
+    restart: unless-stopped
+  db:
+    image: postgres:17
+    environment: [POSTGRES_USER=velio, POSTGRES_PASSWORD, POSTGRES_DB=velio]
+    volumes: [velio-db:/var/lib/postgresql/data]
     networks: [velio]
     restart: unless-stopped
   cloudflared:
@@ -149,19 +212,16 @@ networks:
       config: [{ subnet: 172.30.0.0/24 }]
 volumes:
   velio-data:
+  velio-db:
 ```
 
 In the dashboard:
 
 1. **Tunnel**: a public hostname `velio.tv` to the service `http://velio:8787`.
-2. **Rules, Transform Rules, Request Header**: for `velio.tv`, set dynamic
-   `X-Velio-TLS-Version` to `cf.tls_version`, `X-Velio-TLS-Cipher` to
-   `cf.tls_cipher`, and `X-Velio-HTTP-Protocol` to `http.request.version`.
-3. Turnstile keys for `velio.tv`, and an R2 bucket for the backups with a
-   30-day lifecycle rule, and an API token that can write to it.
+2. Turnstile keys for `velio.tv`.
 
-The velio container trusts the whole subnet, which only it and
-`cloudflared` are on, and publishes no port. Check a request's line in
+The velio container trusts the whole subnet, which only it, the database
+and `cloudflared` are on, and publishes no port. Check a request's line in
 `docker logs velio`: it should show your own IP, not `172.30.0.x`.
 
 ## Notices and closing accounts
@@ -200,21 +260,16 @@ after closing.
 
 ## Security model, in short
 
-- The password never leaves the browser. Argon2id and HKDF make a sign-in
-  key (the server keeps its SHA-256) and an unlock key, which opens the
-  owner's keys, kept on the server sealed.
-- Lists and profiles are sealed with their own keys (TweetNaCl secretbox).
-  The owner's browser signs the manifest (Ed25519) naming every record at its
-  revision; browsers and TVs refuse anything that doesn't match it.
-- TVs get their profile keys boxed to their own key. Pairing secrets travel
-  in the QR code's fragment or are typed, never through the server.
-- Removing a TV, or a profile from it, re-keys what it could read; the server
-  refuses a change that doesn't.
-- The owner's browser remembers the newest revision it opened and refuses
-  older ones (rollback).
-- The server checks what it can without keys: signatures, revisions, sizes,
-  rate limits, same-origin posts, `__Host-` SameSite=Strict cookies, and a
-  strict CSP on every page.
-
-What the server can still do, and other accepted limits, are in PLAN.md
-("Phase 7 results"). The owner-facing version is the page at `/security`.
+- Lists, profiles and add-ons are kept as written, not end-to-end
+  encrypted: the server, and whoever runs it, can read them, as Nuvio's can.
+  `/security` says so to owners.
+- Every API call runs as the caller's Postgres role, `anon` or
+  `authenticated` with the token's claims, so Nuvio's row-level policies
+  decide what it reads and writes. The website writes as the signed-in
+  user the same way.
+- Passwords are hashed with bcrypt, as GoTrue does. Refresh tokens turn on
+  each use, and one used twice ends its session.
+- TVs sign in only by QR code, approved by a signed-in browser; an account's
+  TVs are counted against its TV limit.
+- The website checks same-origin posts, uses `__Host-` SameSite=Strict
+  cookies, rate limits per IP, and sends a strict CSP on every page.

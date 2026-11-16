@@ -138,6 +138,7 @@
     "node_modules/**",
     ".claude/**",
     "apps/server/target/**",
-    "apps/server/public/**"
+    "apps/server/public/**",
+    "references/**"
   ]
 }

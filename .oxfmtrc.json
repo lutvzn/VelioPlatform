@@ -6,12 +6,5 @@
   "trailingComma": "all",
   "tabWidth": 2,
   "sortPackageJson": false,
-  "ignorePatterns": [
-    "node_modules",
-    ".DS_store",
-    "dist",
-    ".env",
-    "pnpm-lock.yaml",
-    "apps/server/tests/vectors.json"
-  ]
+  "ignorePatterns": ["node_modules", ".DS_store", "dist", ".env", "pnpm-lock.yaml", "references"]
 }

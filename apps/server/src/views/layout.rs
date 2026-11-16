@@ -1,5 +1,5 @@
-//! The page shell. Every page loads HTMX and vault.js; vault.js does
-//! everything secret in the browser (PLAN.md, "HTMX and end-to-end encryption").
+//! The page shell. Every page loads HTMX and site.js, which only marks the
+//! tab shown and shows a list form's fields for its kind.
 
 use maud::{Markup, PreEscaped, html};
 
@@ -8,7 +8,7 @@ const HTMX_CONFIG: &str = r#"{"includeIndicatorCSS":false}"#;
 
 pub struct Page<'a> {
     pub title: &'a str,
-    /// Whose keys this tab may hold; none means signed out.
+    /// Who is signed in; none means signed out.
     pub account_id: Option<&'a str>,
     /// Loads Turnstile's script, for the sign-up, reset and report forms.
     pub turnstile: bool,
@@ -36,10 +36,9 @@ pub const ICON_LOCK: &str =
 pub const ICON_SERVER: &str = r#"<rect x="3" y="3.5" width="18" height="7" rx="2"/><rect x="3" y="13.5" width="18" height="7" rx="2"/><path d="M7 7h.01M7 17h.01" stroke-width="2.6"/>"#;
 pub const ICON_PHONE: &str = r#"<rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M11 18h2"/>"#;
 
-/// data-account-id tells vault.js whose keys this tab may hold; none means signed out.
 pub fn nav(account_id: Option<&str>, oob: bool) -> Markup {
     html! {
-        nav #nav hx-swap-oob=[oob.then_some("true")] data-account-id=[account_id] {
+        nav #nav hx-swap-oob=[oob.then_some("true")] {
             @if account_id.is_some() {
                 a href="/lists" { (icon(ICON_LISTS)) "Lists" }
                 a href="/profiles" { (icon(ICON_PROFILES)) "Profiles" }
@@ -62,9 +61,8 @@ pub fn title_tag(title: &str) -> Markup {
     html! { title { (title) " · Velio" } }
 }
 
-// Links and forms are boosted, so moving between pages keeps vault.js, and the
-// keys it holds, in memory. Pages with Turnstile are opened without boosting,
-// as its script is in the head.
+// Links and forms are boosted, so moving between pages swaps only #main.
+// Pages with Turnstile are opened without boosting, as its script is in the head.
 pub fn layout(page: Page<'_>, body: Markup) -> Markup {
     html! {
         html lang="en" {
@@ -76,7 +74,7 @@ pub fn layout(page: Page<'_>, body: Markup) -> Markup {
                 (title_tag(page.title))
                 link rel="stylesheet" href="/static/app.css";
                 script src="/static/htmx.min.js" defer {}
-                script src="/static/vault.js" defer {}
+                script src="/static/site.js" defer {}
                 @if page.turnstile {
                     script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer {}
                 }

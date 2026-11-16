@@ -1,5 +1,5 @@
 // Builds what the browser loads into public/static, which the server embeds
-// (src/assets.rs): vault.js and the operator's ops.js from client/, HTMX at
+// (src/assets.rs): site.js and the operator's ops.js from client/, HTMX at
 // its pinned version, and the styles. Runs before `cargo build` (the
 // Dockerfile, and the e2e tests).
 
@@ -21,7 +21,6 @@ const script = name =>
     outfile: path.join(out, `${name}.js`),
     bundle: true,
     format: "iife",
-    // Owner devices: browsers with WebAssembly, for Argon2id.
     target: "es2020",
     minify: true,
     sourcemap: true,
@@ -30,7 +29,7 @@ const script = name =>
   });
 
 // The owner's pages, and the operator's at /ops (src/views/ops.rs).
-await script("vault");
+await script("site");
 await script("ops");
 await copyFile(path.join(root, "client/app.css"), path.join(out, "app.css"));
 await copyFile(path.join(root, "client/ops.css"), path.join(out, "ops.css"));

@@ -1,12 +1,13 @@
 //! Abuse and copyright notices (the Worker's `lib/notices.ts`; PLAN.md,
 //! "Legal and abuse"): sent with the /abuse form, kept in `notices`, mailed to
-//! the abuse address, and handled through /ops. Velio can't read lists, so a
-//! notice can only lead to closing the account it names.
+//! the abuse address, and handled through /ops. A notice can lead to removing
+//! a list, or closing the account it names.
 
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use deadpool_postgres::GenericClient;
+use uuid::Uuid;
 
-use crate::accounts::{Fields, email_problem, find_account, normalize_email};
+use crate::accounts::{Fields, email_problem, normalize_email};
 use crate::tokens::random_bytes;
 
 pub const MAX_NOTICE_FIELD: usize = 200;
@@ -95,28 +96,35 @@ pub fn new_notice_id() -> String {
 }
 
 /// Keeps the notice; answers its reference, and whether the account it names was found.
-pub fn save_notice(conn: &Connection, notice: &NoticeInput, now: i64) -> Result<(String, bool)> {
-    let account = if notice.account_email.is_empty() { None } else { find_account(conn, &notice.account_email)? };
+pub async fn save_notice(db: &impl GenericClient, notice: &NoticeInput, now: i64) -> Result<(String, bool)> {
+    let account: Option<Uuid> = if notice.account_email.is_empty() {
+        None
+    } else {
+        db.query_opt("SELECT id FROM auth.users WHERE lower(email) = $1", &[&notice.account_email])
+            .await?
+            .map(|row| row.get(0))
+    };
     let id = new_notice_id();
-    conn.execute(
-        "INSERT INTO notices (id, received_at, kind, name, email, organization, account_email, account_id,
-           work, sworn, signature, details)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            id,
-            now,
-            notice.kind,
-            notice.name,
-            notice.email,
-            notice.organization,
-            notice.account_email,
-            account.as_ref().map(|account| &account.id),
-            notice.work,
-            notice.sworn,
-            notice.signature,
-            notice.details,
+    db.execute(
+        "INSERT INTO velio_private.notices (id, received_at, kind, name, email, organization, account_email,
+           account_id, work, sworn, signature, details)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        &[
+            &id,
+            &now,
+            &notice.kind,
+            &notice.name,
+            &notice.email,
+            &notice.organization,
+            &notice.account_email,
+            &account,
+            &notice.work,
+            &notice.sworn,
+            &notice.signature,
+            &notice.details,
         ],
-    )?;
+    )
+    .await?;
     Ok((id, account.is_some()))
 }
 

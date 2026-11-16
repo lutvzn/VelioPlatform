@@ -1,13 +1,13 @@
-//! Pages and the fragments HTMX swaps into #main, in maud. The markup is the
-//! Worker's (`src/views`), so vault.js and the styles work as they
-//! are.
+//! Pages and the fragments HTMX swaps into #main, in maud.
 
 pub mod accounts;
+pub mod approve;
+pub mod devices;
 pub mod layout;
+pub mod lists;
 pub mod ops;
 pub mod pages;
-pub mod pair;
-pub mod vault;
+pub mod profiles;
 
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};

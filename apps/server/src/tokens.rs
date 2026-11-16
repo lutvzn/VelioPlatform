@@ -1,19 +1,10 @@
-//! Random tokens and their hashes, and base64 as sync-core reads it (the
-//! Worker's `lib/tokens.ts`).
+//! Random tokens and ids, and their hashes.
 
 use base64::Engine;
 use base64::alphabet;
-use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+use base64::engine::{GeneralPurpose, GeneralPurposeConfig};
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
-
-/// Standard base64, written with padding, as sync-core's `toBase64`.
-pub const BASE64: GeneralPurpose = GeneralPurpose::new(
-    &alphabet::STANDARD,
-    GeneralPurposeConfig::new()
-        .with_decode_padding_mode(DecodePaddingMode::Indifferent)
-        .with_decode_allow_trailing_bits(true),
-);
 
 const URL_SAFE: GeneralPurpose =
     GeneralPurpose::new(&alphabet::URL_SAFE, GeneralPurposeConfig::new().with_encode_padding(false));
@@ -29,7 +20,7 @@ pub fn new_token() -> String {
     URL_SAFE.encode(random_bytes::<32>())
 }
 
-/// 12 random bytes as URL-safe base64, as sync-core's `newId`: a TV's id in the manifest.
+/// 12 random bytes as URL-safe base64: a short id, such as an IPTV list's.
 pub fn new_id() -> String {
     URL_SAFE.encode(random_bytes::<12>())
 }
@@ -55,15 +46,6 @@ pub fn hmac_sha256(key: impl AsRef<[u8]>, message: impl AsRef<[u8]>) -> [u8; 32]
     mac.finalize().into_bytes().into()
 }
 
-/// Base64 that decodes to exactly `length` bytes, as sync-core's `fromBase64` reads it.
-pub fn decodes(value: &str, length: usize) -> bool {
-    decode(value).is_some_and(|bytes| bytes.len() == length)
-}
-
-pub fn decode(value: &str) -> Option<Vec<u8>> {
-    BASE64.decode(value.trim_end_matches('=')).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,16 +64,5 @@ mod tests {
         assert_eq!(hex::encode(sha256("abc")), hash);
         assert!(same_digest(sha256("abc"), sha256("abc")));
         assert!(!same_digest(sha256("abc"), []));
-    }
-
-    #[test]
-    fn reads_base64_as_sync_core_does() {
-        let key = BASE64.encode([7u8; 32]);
-        assert!(key.ends_with('='));
-        assert!(decodes(&key, 32));
-        assert!(decodes(key.trim_end_matches('='), 32));
-        assert!(!decodes(&key, 16));
-        assert!(!decodes("not base64!", 8));
-        assert!(!decodes("", 32));
     }
 }

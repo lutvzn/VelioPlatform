@@ -1,8 +1,8 @@
-//! Email: confirming the address at sign-up, the reset link, notices and
-//! closed accounts (the Worker's
-//! `lib/mail.ts`). Sent over SMTP or by Resend; with DEV_MODE, written to
-//! `dev_outbox` instead and shown at /dev/outbox. Plain text only, in neutral
-//! wording (PLAN.md, "Legal and abuse").
+//! Email: confirming the address at sign-up or a change of address, the
+//! password reset link, notices and closed accounts. Sent over SMTP or by
+//! Resend; with DEV_MODE, written to `velio_private.dev_outbox` instead and
+//! shown at /dev/outbox. Plain text only, in neutral wording (PLAN.md, "Legal
+//! and abuse").
 
 use std::time::Duration;
 
@@ -10,7 +10,6 @@ use anyhow::{Context, Result, bail};
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
-use rusqlite::params;
 use serde_json::json;
 
 use crate::AppState;
@@ -56,16 +55,14 @@ impl Mailer {
 /// doesn't tell whether an email has an account.
 pub async fn send(state: &AppState, mail: Mail) -> Result<()> {
     if let Mailer::DevOutbox = *state.mailer {
-        return state
-            .db
-            .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO dev_outbox (sent_at, to_address, subject, text) VALUES (?, ?, ?, ?)",
-                    params![now_ms(), mail.to, mail.subject, mail.text],
-                )?;
-                Ok(())
-            })
-            .await;
+        let client = state.db.client().await?;
+        client
+            .execute(
+                "INSERT INTO velio_private.dev_outbox (sent_at, to_address, subject, text) VALUES ($1, $2, $3, $4)",
+                &[&now_ms(), &mail.to, &mail.subject, &mail.text],
+            )
+            .await?;
+        return Ok(());
     }
     let mailer = state.mailer.clone();
     tokio::spawn(async move {
@@ -112,7 +109,7 @@ pub fn confirm_mail(site: &str, to: &str, link: &str) -> Mail {
         to: to.into(),
         subject: "Confirm your email for Velio".into(),
         text: format!(
-            "Open this link to confirm your email and finish making your Velio account:\n\n{link}\n\n\
+            "Open this link to confirm your email for your Velio account:\n\n{link}\n\n\
              The link works for 24 hours.{}",
             footer(site)
         ),
@@ -126,7 +123,7 @@ pub fn existing_account_mail(site: &str, to: &str) -> Mail {
         text: format!(
             "Someone tried to make a Velio account with this email, but it already has one.\n\n\
              Sign in: {site}/signin\n\
-             Forgot the password? Reset the account: {site}/reset{}",
+             Forgot the password? Choose a new one: {site}/forgot{}",
             footer(site)
         ),
     }
@@ -135,12 +132,10 @@ pub fn existing_account_mail(site: &str, to: &str) -> Mail {
 pub fn reset_mail(site: &str, to: &str, link: &str) -> Mail {
     Mail {
         to: to.into(),
-        subject: "Reset your Velio account".into(),
+        subject: "Choose a new Velio password".into(),
         text: format!(
             "Open this link to choose a new password:\n\n{link}\n\n\
-             If you made a recovery key, the page asks for it, and your lists, profiles and TVs stay. \
-             Without one, Velio can't read your lists, so a reset deletes them, with your profiles and signed-in \
-             TVs, and you add them again afterwards.\n\nThe link works for 1 hour.{}",
+             Your lists, profiles and add-ons stay as they are.\n\nThe link works for 1 hour.{}",
             footer(site)
         ),
     }
@@ -191,7 +186,7 @@ pub fn closed_mail(site: &str, to: &str, abuse: &str, reason: &str, delete_at: i
         subject: "Your Velio account is closed".into(),
         text: format!(
             "Your Velio account ({to}) was closed, for this reason:\n\n{reason}\n\n\
-             You can't sign in, and your TVs are signed out. Your encrypted lists, profiles and keys will be \
+             You can't sign in, and your TVs and apps are signed out. Your lists, profiles and add-ons will be \
              deleted on {}.\n\n\
              If you think this is a mistake, or you want to contest a copyright notice, write to {abuse} \
              before then, with this email address and your reasons.\n\nVelio · {site}\n",
@@ -207,25 +202,26 @@ pub fn reopened_mail(site: &str, to: &str) -> Mail {
         subject: "Your Velio account is open again".into(),
         text: format!(
             "Your Velio account ({to}) is open again, with your lists and profiles. Sign in at {site}/signin. \
-             Your TVs were signed out when it closed: remove them on the TVs page, and sign them in again.\n\nVelio · {site}\n"
+             Your TVs and apps were signed out when it closed: sign them in again.\n\nVelio · {site}\n"
         ),
     }
 }
 
-/// The links /dev/outbox shows under each email, as /\/(?:confirm|reset)\/[\w-]+/g finds them.
+/// The links /dev/outbox shows under each email: the site's /verify and
+/// /reset links, as auth mails them, with their query.
 pub fn links_in(text: &str) -> Vec<&str> {
     let mut links = Vec::new();
     let mut at = 0;
     while at < text.len() {
         let rest = &text[at..];
-        let prefix = ["/confirm/", "/reset/"].into_iter().find(|prefix| rest.starts_with(prefix));
+        let prefix = ["/verify?", "/reset?"].into_iter().find(|prefix| rest.starts_with(prefix));
         if let Some(prefix) = prefix {
-            let token = rest[prefix.len()..]
-                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            let query = rest[prefix.len()..]
+                .find(|c: char| !(c.is_ascii_alphanumeric() || "_-=&%.".contains(c)))
                 .unwrap_or(rest.len() - prefix.len());
-            if token > 0 {
-                links.push(&rest[..prefix.len() + token]);
-                at += prefix.len() + token;
+            if query > 0 {
+                links.push(&rest[..prefix.len() + query]);
+                at += prefix.len() + query;
                 continue;
             }
         }
@@ -240,10 +236,11 @@ mod tests {
 
     #[test]
     fn finds_the_links_in_an_email() {
-        let mail = confirm_mail("https://velio.tv", "a@example.invalid", "https://velio.tv/confirm/ab_C-9");
-        assert_eq!(links_in(&mail.text), ["/confirm/ab_C-9"]);
+        let link = "https://velio.tv/verify?type=signup&token=ab_C-9";
+        let mail = confirm_mail("https://velio.tv", "a@example.invalid", link);
+        assert_eq!(links_in(&mail.text), ["/verify?type=signup&token=ab_C-9"]);
         let existing = existing_account_mail("https://velio.tv", "a@example.invalid");
         assert!(links_in(&existing.text).is_empty());
-        assert_eq!(links_in("· /reset/x1 and /confirm/ /reset/y"), ["/reset/x1", "/reset/y"]);
+        assert_eq!(links_in("· /reset?token=x1 and /verify? /reset?token=y."), ["/reset?token=x1", "/reset?token=y."]);
     }
 }
